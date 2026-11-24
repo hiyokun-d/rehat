@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local HTTPS certs (scripts/make-cert.sh)
+/certs/
+
+# MediaPipe runtime assets (scripts/mediapipe-assets.sh)
+/public/mediapipe/
+/public/litert/
+/public/asl/

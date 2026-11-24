@@ -2,24 +2,39 @@
   "name": "rehat",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node server.mts",
     "build": "next build",
-    "start": "next start",
+    "start": "NODE_ENV=production node server.mts",
+    "test": "bun test",
     "lint": "biome check",
-    "format": "biome format --write"
+    "format": "biome format --write",
+    "cert": "sh scripts/make-cert.sh",
+    "assets": "sh scripts/mediapipe-assets.sh"
   },
   "dependencies": {
+    "@litertjs/core": "2.5.3",
+    "@mediapipe/tasks-vision": "^1.2.3",
+    "dexie": "^4.4.7",
+    "lucide-react": "^1.79.0",
+    "motion": "^14.14.0",
     "next": "16.4.6",
+    "qrcode-generator": "^2.0.4",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "three": "0.170.0",
+    "ws": "^8.23.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.2",
     "@tailwindcss/turbopack": "4.3.3",
+    "@types/bun": "^1.4.5",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "0.170.0",
+    "@types/ws": "^8.18.2",
     "babel-plugin-react-compiler": "1.0.0",
     "tailwindcss": "4.3.3",
     "typescript": "^5"

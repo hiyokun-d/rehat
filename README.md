@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Rehat — feasibility prototype
 
-## Getting Started
+Question this answers: **does phone-as-sensor actually work on real phones?** Not the product.
+Brief: `docs/PROTOTYPE_PROMPT.md` · Notes per milestone: `docs/NOTES.md` · Checklist: `docs/TESTING.md`.
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Run
+```sh
+bun install
+bun run cert   # once: self-signed HTTPS cert for your LAN IP (re-run if the IP changes)
+bun run assets # once: MediaPipe wasm + hand model into public/mediapipe (Mode 2)
+bun dev        # node server.mts: Next.js + WebSocket relay
+```
+The server prints:
+```
+> Rehat prototype on http://localhost:3000        <- laptop
+> Phones (same Wi-Fi): https://192.168.1.29:3443  <- phone
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Phone only (no laptop needed)
+Open `https://<LAN IP>:3443/phone` on the phone, accept the certificate warning once, tap **Mulai**.
+Limits are set on the phone under "Latihan & batas" (all values are examples).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Phone + screen
+1. Laptop: open `http://localhost:3000/screen`. It shows a room code and a QR.
+2. Phone: scan the QR (it points at the HTTPS LAN address) or open `/phone` and type the code.
+3. Tap **Mulai**. Limits now come from the screen.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Why HTTPS: phone browsers only give motion sensors and camera to secure pages. Plain
+`http://192.168.x.x:3000` loads but the sensor never starts.
 
-## Learn More
+### Alternative: tunnel (real certificate, works across networks)
+```sh
+brew install cloudflared
+cloudflared tunnel --url http://localhost:3000
+```
+Open the printed `https://*.trycloudflare.com/screen` on the laptop; the QR then uses that URL.
 
-To learn more about Next.js, take a look at the following resources:
+## Mode 2 (experimental): gesture -> speech
+`https://<LAN IP>:3443/gesture` on the phone; `/screen` tab "Mode 2: Gestur" for subtitles.
+Not a sign-language translator. Research + sources: `docs/MODE2_RESEARCH.md`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Two modes on that page:
+- **Kata saya**: record your own gestures (any language), recognised by DTW on this device.
+- **ASL siap pakai**: pretrained model, 250 American Sign Language signs, nothing to record.
+  Needs `bun run assets` (Holistic tracker + model). Best on a laptop webcam; a phone can mirror
+  the laptop's tracker (Pengaturan -> "Hubungkan HP ke kamera ini"). Model by ceyda akin,
+  CC BY 4.0 (https://www.kaggle.com/models/ceydaakin2004/asl-realtime-transformer).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Test without a phone
+`/phone` -> "Coba tanpa sensor" -> "Data sintetis" plays generated movement (not a measurement).
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Checks
+```sh
+bun test       # angle filter, reps, envelope, rooms
+bun run lint
+```
