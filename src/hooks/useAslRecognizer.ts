@@ -1,8 +1,12 @@
 "use client";
 // Pretrained ASL pipeline on a <video>: MediaPipe Holistic (face + hands + body, one model)
-// -> 543 landmarks per frame -> SignSegmenter ("raise hand, sign, lower hand") -> model.
-// While a sign is in progress, a live guess runs every few frames (shown, never spoken),
-// so you can see how the model is reading you before you finish.
+// -> 543 landmarks per frame -> cut into signs -> model. Three ways to cut a sign:
+//  - "pause" (default): the hand stops moving for ~200 ms (camera MotionGate). No need to
+//    lower the hand, so signs can follow each other.
+//  - gyro: same, but the phone in the signing hand decides (faster, 60-100 Hz).
+//  - "hand-out": the original upstream rule (hand leaves the picture for N frames).
+// While a sign is in progress a live guess runs every few frames. With "early" on, a guess
+// that is confident AND the same twice in a row is accepted before the sign ends.
 import type {
   HolisticLandmarker,
   HolisticLandmarkerResult,
@@ -19,7 +23,13 @@ import {
   type AslPrediction,
   loadAslClassifier,
 } from "@/lib/asl/model";
-import { GatedClip, type GateEvent } from "@/lib/asl/motionGate";
+import {
+  CAMERA_GATE,
+  GatedClip,
+  type GateEvent,
+  handSpeed,
+  MotionGate,
+} from "@/lib/asl/motionGate";
 import {
   type FrameChecks,
   frameChecks,
@@ -28,8 +38,9 @@ import {
   toWindow,
 } from "@/lib/asl/preprocess";
 
-const LIVE_EVERY_FRAMES = 6; // live guess cadence; model takes ~4 ms on desktop (upstream)
-const LIVE_MIN_FRAMES = 8;
+const LIVE_EVERY_FRAMES = 3; // live guess cadence; model ~4-16 ms, `busy` stops pile-ups
+const LIVE_MIN_FRAMES = 6;
+const EARLY_MIN_FRAMES = 8; // never accept a guess from less than ~0.3-0.5 s of signing
 // Bad laptop webcams: dim, low contrast. "Enhance" brightens the frame on a canvas BEFORE
 // tracking (the model sees the enhanced image). Filter strength tuned by testing.
 const ENHANCE_FILTER = "brightness(1.35) contrast(1.25) saturate(1.1)";
@@ -53,7 +64,11 @@ export interface AslSignResult extends AslPrediction {
   handFrames: number; // of which the hand was visible (what the model actually sees)
   /** Gyro mode: ms from "hand stopped" to "result ready" (end detection + model). */
   afterStillMs?: number;
+  /** Accepted from the live guess before the sign ended. */
+  early?: boolean;
 }
+
+export type CutMode = "pause" | "hand-out";
 
 export function useAslRecognizer(
   videoRef: React.RefObject<HTMLVideoElement | null>,
@@ -61,6 +76,10 @@ export function useAslRecognizer(
   opts: {
     gapFrames: number;
     enhance: boolean;
+    cut: CutMode;
+    stillMs: number; // "pause" mode: how long still = end of sign
+    early: boolean;
+    minConf: number; // early guesses must reach this
     onSign: (r: AslSignResult) => void;
     onFrame?: (res: HolisticLandmarkerResult) => void;
   },
@@ -92,11 +111,40 @@ export function useAslRecognizer(
   useEffect(() => {
     onSignRef.current = opts.onSign;
   });
-  const onSign = useEffectEvent(opts.onSign);
+  const tune = useRef(opts);
+  useEffect(() => {
+    tune.current = opts; // cut/stillMs/early/minConf apply live, without restarting the loop
+  });
+  // One sign = one result: an early result blocks the end-of-sign result of the same sign.
+  const sign = useRef({ id: 0, fired: false, prevLive: "" });
   const onFrame = useEffectEvent((r: HolisticLandmarkerResult) =>
     opts.onFrame?.(r),
   );
   const gap = opts.gapFrames;
+
+  /** A sign ended: classify the whole clip unless an early guess already answered it. */
+  const finish = useCallback(
+    (frames: Float32Array[], extra: Partial<AslSignResult> = {}) => {
+      const s = sign.current;
+      const fired = s.fired;
+      sign.current = { id: s.id + 1, fired: false, prevLive: "" };
+      setRecording(0);
+      setLive(null);
+      const cls = clsRef.current;
+      if (fired || !cls) return;
+      const w = toWindow(frames);
+      if (w.length < 4) return; // hand hardly visible during the sign
+      cls(w).then((p) =>
+        onSignRef.current({
+          ...p,
+          frames: frames.length,
+          handFrames: w.length,
+          ...extra,
+        }),
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     segRef.current.gap = gap; // slider applies live
@@ -121,6 +169,12 @@ export function useAslRecognizer(
     tiny.height = 24;
     const tinyCtx = tiny.getContext("2d", { willReadFrequently: true });
     let lastLight = 0;
+    const camGate = new MotionGate(CAMERA_GATE);
+    let prevHands: Parameters<typeof handSpeed>[0] = {
+      l: undefined,
+      r: undefined,
+    };
+    let prevT = performance.now();
 
     (async () => {
       setStatus("loading");
@@ -190,36 +244,81 @@ export function useAslRecognizer(
 
         const seg = segRef.current;
         const clip = clipRef.current;
-        let done: Float32Array[] | null = null;
+        const cur = {
+          l: res.leftHandLandmarks[0],
+          r: res.rightHandLandmarks[0],
+        };
         if (gatedRef.current) clip.push(now, frame);
-        else done = seg.push(frame);
-        const current = gatedRef.current
-          ? clip.collecting
-            ? clip.frames
-            : []
-          : seg.frames;
+        else if (tune.current.cut === "pause") {
+          clip.push(now, frame);
+          camGate.cfg = { ...CAMERA_GATE, stillMs: tune.current.stillMs };
+          // No hand = speed 0: a hand leaving the picture also ends the sign.
+          const ev = camGate.push(
+            now,
+            handSpeed(prevHands, cur, (now - prevT) / 1000),
+          );
+          if (ev?.kind === "start") clip.start(ev.t);
+          else if (ev?.kind === "discard") {
+            clip.end();
+            sign.current = {
+              id: sign.current.id + 1,
+              fired: false,
+              prevLive: "",
+            };
+          } else if (ev?.kind === "end")
+            finish(clip.end(), { afterStillMs: now - ev.stillSince });
+        } else {
+          const done = seg.push(frame);
+          if (done) finish(done);
+        }
+        prevHands = cur;
+        prevT = now;
+        const current =
+          gatedRef.current || tune.current.cut === "pause"
+            ? clip.collecting
+              ? clip.frames
+              : []
+            : seg.frames;
         if (now - lastUi > 150) {
           lastUi = now;
           setFps(frameTimes.length);
           setChecks(frameChecks(frame));
           setRecording(current.length);
         }
-        const cls = classify;
-        if (done) {
-          setRecording(0);
-          setLive(null);
-          const w = toWindow(done);
-          cls(w).then((p) =>
-            onSign({ ...p, frames: done.length, handFrames: w.length }),
-          );
-        } else if (
+        if (
           current.length >= LIVE_MIN_FRAMES &&
           ++frameNo % LIVE_EVERY_FRAMES === 0 &&
           !busy
         ) {
           busy = true;
-          cls(toWindow(current))
-            .then((p) => current.length && setLive(p))
+          const id = sign.current.id;
+          const n = current.length;
+          classify(toWindow(current))
+            .then((p) => {
+              const s = sign.current;
+              if (s.id !== id) return; // that sign already ended
+              setLive(p);
+              const best = p.top[0];
+              const { early, minConf } = tune.current;
+              // Early accept: confident, same answer as the previous live guess, long enough.
+              if (
+                early &&
+                !s.fired &&
+                best &&
+                n >= EARLY_MIN_FRAMES &&
+                best.p >= minConf &&
+                best.sign === s.prevLive
+              ) {
+                s.fired = true;
+                onSignRef.current({
+                  ...p,
+                  frames: n,
+                  handFrames: n,
+                  early: true,
+                });
+              }
+              s.prevLive = best?.sign ?? "";
+            })
             .finally(() => {
               busy = false;
             });
@@ -236,7 +335,7 @@ export function useAslRecognizer(
       setStatus("idle");
       setLive(null);
     };
-  }, [enabled, videoRef]);
+  }, [enabled, videoRef, finish]);
 
   /** Turn gyro mode on/off (phone streaming motion from the signing hand). */
   const setGated = useCallback((on: boolean) => {
@@ -247,29 +346,18 @@ export function useAslRecognizer(
     setGatedState(on);
   }, []);
 
-  /** Feed MotionGate events (timestamps in performance.now() time). */
-  const gateEvent = useCallback((ev: GateEvent) => {
-    const clip = clipRef.current;
-    const cls = clsRef.current;
-    if (!gatedRef.current || !cls) return;
-    if (ev.kind === "start") clip.start(ev.t);
-    else if (ev.kind === "discard") clip.end();
-    else if (ev.kind === "end") {
-      const frames = clip.end();
-      setRecording(0);
-      setLive(null);
-      const w = toWindow(frames);
-      if (w.length < 4) return; // hand hardly visible during the sign
-      cls(w).then((p) =>
-        onSignRef.current({
-          ...p,
-          frames: frames.length,
-          handFrames: w.length,
-          afterStillMs: performance.now() - ev.stillSince,
-        }),
-      );
-    }
-  }, []);
+  /** Feed MotionGate events from the phone gyro (timestamps in performance.now() time). */
+  const gateEvent = useCallback(
+    (ev: GateEvent) => {
+      const clip = clipRef.current;
+      if (!gatedRef.current) return;
+      if (ev.kind === "start") clip.start(ev.t);
+      else if (ev.kind === "discard") clip.end();
+      else if (ev.kind === "end")
+        finish(clip.end(), { afterStillMs: performance.now() - ev.stillSince });
+    },
+    [finish],
+  );
 
   return {
     status,

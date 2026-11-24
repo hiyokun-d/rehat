@@ -39,7 +39,7 @@ import { Disclosure } from "@/components/ui/Disclosure";
 import { Screen } from "@/components/ui/Screen";
 import { Slider } from "@/components/ui/Slider";
 import { Tabs } from "@/components/ui/Tabs";
-import { useAslRecognizer } from "@/hooks/useAslRecognizer";
+import { type CutMode, useAslRecognizer } from "@/hooks/useAslRecognizer";
 import { useCamera } from "@/hooks/useCamera";
 import { useRelay } from "@/hooks/useRelay";
 import { useSubtitle } from "@/hooks/useSubtitle";
@@ -75,7 +75,8 @@ interface Shown {
   handFrames: number;
   ms: number;
   all?: Float32Array; // only for local results (target rank)
-  afterStillMs?: number; // gyro mode: how fast the word came after the hand stopped
+  afterStillMs?: number; // how fast the word came after the hand stopped
+  early?: boolean; // accepted before the sign ended
 }
 
 export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
@@ -86,6 +87,9 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
   const [minConf, setMinConf] = useState(0.5); // speak only above this; tuned by testing
   const [gapFrames, setGapFrames] = useState(8); // frames without hand that end a sign (upstream default)
   const [enhance, setEnhance] = useState(false);
+  const [cut, setCut] = useState<CutMode>("pause"); // end a sign on a short pause, not hand-out
+  const [stillMs, setStillMs] = useState(200); // pause length that ends a sign; tuned by testing
+  const [early, setEarly] = useState(true); // accept a stable live guess before the sign ends
   const [view, setView] = useState<OverlayMode>("skeleton");
   const [lang, setLang] = useState<Lang>("id");
   const [target, setTarget] = useState<string | null>(null);
@@ -182,6 +186,10 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
   const asl = useAslRecognizer(camera.videoRef, localCam, {
     gapFrames,
     enhance,
+    cut,
+    stillMs,
+    early,
+    minConf,
     onFrame: (res: HolisticLandmarkerResult) => {
       const t = performance.now();
       const v = camera.videoRef.current;
@@ -223,6 +231,7 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
           handFrames: r.handFrames,
           ms: r.ms,
           afterStillMs: r.afterStillMs,
+          early: r.early,
           spoken,
         };
         relay.send("asl-result", msg);
@@ -392,7 +401,9 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
               ? `Merekam isyarat (${recording} frame)`
               : asl.gated
                 ? "Gerakkan tangan ber-HP, jeda sebentar = 1 isyarat"
-                : "Angkat tangan untuk mulai"}
+                : cut === "pause"
+                  ? "Lakukan isyarat, jeda sebentar = 1 isyarat"
+                  : "Angkat tangan untuk mulai"}
           </Badge>
         )}
       </div>
@@ -621,6 +632,7 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
                     ms
                     {last.afterStillMs !== undefined &&
                       ` · ${Math.round(last.afterStillMs)} ms setelah tangan berhenti`}
+                    {last.early && " · dikenali sebelum isyarat selesai"}
                   </span>
                 </p>
                 <ScoreBars
@@ -721,14 +733,51 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
               value={Math.round(minConf * 100)}
               onChange={(v) => setMinConf(v / 100)}
             />
-            <Slider
-              label="Isyarat selesai setelah tangan hilang (frame)"
-              min={3}
-              max={20}
-              step={1}
-              value={gapFrames}
-              onChange={setGapFrames}
+            <Tabs<CutMode>
+              items={[
+                { id: "pause", label: "Selesai saat tangan berhenti" },
+                { id: "hand-out", label: "Selesai saat tangan turun" },
+              ]}
+              value={cut}
+              onChange={setCut}
             />
+            {cut === "pause" ? (
+              <Slider
+                label="Jeda yang mengakhiri isyarat"
+                min={100}
+                max={600}
+                step={20}
+                unit=" ms"
+                value={stillMs}
+                onChange={setStillMs}
+              />
+            ) : (
+              <Slider
+                label="Isyarat selesai setelah tangan hilang (frame)"
+                min={3}
+                max={20}
+                step={1}
+                value={gapFrames}
+                onChange={setGapFrames}
+              />
+            )}
+            <label className="flex min-h-12 items-center justify-between gap-3">
+              <span>
+                <span className="block font-medium">
+                  Kenali sebelum isyarat selesai
+                </span>
+                <span className="block text-sm text-muted">
+                  Kata keluar begitu tebakan sama 2x berturut-turut dan di atas
+                  batas yakin. Lebih cepat, lebih sering salah.
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={early}
+                onChange={(e) => setEarly(e.target.checked)}
+                className="size-6 accent-primary"
+              />
+            </label>
             {role === "local" && (
               <Button
                 variant="secondary"

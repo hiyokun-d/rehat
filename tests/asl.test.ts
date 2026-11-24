@@ -220,3 +220,40 @@ describe("faster signing: phone gyro gates the sign", () => {
     expect(frames[frames.length - 1]).toBe(1297);
   });
 });
+
+import { CAMERA_GATE, handSpeed } from "../src/lib/asl/motionGate";
+
+describe("faster signing: camera only (hand pauses, not lowered)", () => {
+  // SYNTHETIC 30 FPS hand: 21 points, small jitter at rest, moves during two signs.
+  const hand = (x: number, jitter: number) =>
+    Array.from({ length: 21 }, (_, i) => ({
+      x: x + i * 0.005 + (Math.random() - 0.5) * jitter,
+      y: 0.5,
+    }));
+  test("two signs with a 300 ms pause, hand never leaves -> two signs", () => {
+    const gate = new MotionGate(CAMERA_GATE);
+    let prev = { l: undefined, r: hand(0.5, 0.002) } as Parameters<
+      typeof handSpeed
+    >[0];
+    let x = 0.5;
+    const kinds: string[] = [];
+    for (let t = 33; t < 3000; t += 33) {
+      const signing = (t > 500 && t < 1100) || (t > 1400 && t < 2100);
+      if (signing) x += 0.02 * Math.sin(t / 80); // ~0.4-0.6 picture/s back and forth
+      const cur = { l: undefined, r: hand(x, 0.002) };
+      const ev = gate.push(t, handSpeed(prev, cur, 0.033));
+      if (ev) kinds.push(ev.kind);
+      prev = cur;
+    }
+    expect(kinds).toEqual(["start", "end", "start", "end"]);
+  });
+  test("no hand -> speed 0", () => {
+    expect(
+      handSpeed(
+        { l: undefined, r: undefined },
+        { l: undefined, r: hand(0.5, 0) },
+        0.033,
+      ),
+    ).toBe(0);
+  });
+});

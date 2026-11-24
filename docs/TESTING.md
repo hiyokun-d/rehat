@@ -104,3 +104,7 @@ Phone: `https://<LAN IP>:3443/gesture`, tap Mulai, allow camera + motion.
 - [ ] Do 3 signs in a row, pausing ~0.3 s between, hand NOT lowered. **Pass:** 3 separate words.
       Write down the "ms setelah tangan berhenti" numbers (median of 10).
 - [ ] Lock the phone mid-session. **Pass:** badge disappears within ~1 s, normal mode works.
+- [ ] Camera only (no phone), "Selesai saat tangan berhenti": 3 signs in a row, short pause,
+      hand stays up. **Pass:** 3 words. Try "Jeda" 140 / 200 / 300 ms: note speed vs wrong words.
+- [ ] "Kenali sebelum isyarat selesai" on vs off, 10 signs each: count correct words and note
+      how many show "dikenali sebelum isyarat selesai".

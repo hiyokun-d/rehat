@@ -1,6 +1,8 @@
 // Indonesian translation of the 250 ASL sign names (the model's labels, from signs.json).
 // Written by the team for display/speech; a gloss is a rough word, not a full translation.
 // Missing entries fall back to the English label.
+import { customWord } from "./customSigns";
+
 export const GLOSS_ID: Record<string, string> = {
   TV: "televisi",
   after: "setelah",
@@ -254,11 +256,13 @@ export const GLOSS_ID: Record<string, string> = {
   zipper: "ritsleting",
 };
 
-export const glossId = (sign: string) => GLOSS_ID[sign] ?? sign;
+export const glossId = (sign: string) =>
+  customWord(sign)?.id ?? GLOSS_ID[sign] ?? sign;
 
 /** Readable English label ("thankyou" -> "thank you"). */
 export const glossEn = (sign: string) =>
-  ({
+  customWord(sign)?.en ??
+  {
     thankyou: "thank you",
     callonphone: "call on phone",
     frenchfries: "french fries",
@@ -268,4 +272,5 @@ export const glossEn = (sign: string) =>
     icecream: "ice cream",
     minemy: "mine/my",
     weus: "we/us",
-  })[sign] ?? sign;
+  }[sign] ??
+  sign;

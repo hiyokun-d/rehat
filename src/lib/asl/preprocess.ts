@@ -142,7 +142,7 @@ export class SignSegmenter {
   push(frame: Float32Array): Float32Array[] | null {
     const hand = detected(frame, LEFT_HAND) || detected(frame, RIGHT_HAND);
     if (!hand && !this.frames.length) return null;
-    this.frames = [...this.frames, frame];
+    this.frames.push(frame); // reset() makes a new array, so returned clips stay intact
     this.handFrames += hand ? 1 : 0;
     this.missing = hand ? 0 : this.missing + 1;
     if (this.missing < this.gap && this.frames.length < this.maxFrames)

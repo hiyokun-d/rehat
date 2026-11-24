@@ -313,3 +313,16 @@ runs over the same Wi-Fi relay as everything else.
   (some static handshapes) can end too early: ASSUMPTION, needs testing with real signs.
   The model was trained on clips cut differently (by its dataset), so cut points may change
   accuracy; unmeasured.
+
+## Faster without the phone: cut on a pause + early accept (2026-11-24)
+
+- **Cut on a pause (default, `CAMERA_GATE`):** the same MotionGate, fed by camera hand speed
+  (mean movement of the 21 hand points, picture heights/s). Start > 0.25/s, end = below 0.1/s
+  for `stillMs` (200 ms, slider 100-600). No hand = speed 0, so leaving the picture still ends
+  a sign. Old rule ("hand-out", 8 frames) is still a setting.
+- **Early accept:** live guess every 3 frames (was 6). If the top sign is >= the confidence
+  slider AND the same as the previous live guess AND >= 8 frames of signing, the word is
+  accepted before the sign ends; that sign's end result is then skipped (one sign = one word).
+- **Trade-off:** faster = more wrong words, especially with confidence at 25%. Two signs done
+  without any pause merge into one clip (early accept then answers only the first).
+- All numbers *tuned by testing* on SYNTHETIC data. Measure with "ms setelah tangan berhenti".

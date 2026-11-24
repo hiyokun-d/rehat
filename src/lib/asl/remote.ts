@@ -53,7 +53,8 @@ export interface AslResultMsg {
   handFrames: number;
   ms: number;
   spoken: boolean; // passed the confidence limit on the laptop
-  afterStillMs?: number; // gyro mode: hand stopped -> result
+  afterStillMs?: number; // hand stopped -> result
+  early?: boolean; // accepted before the sign ended
 }
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
