@@ -42,7 +42,7 @@ import { type HandFrame, useHandTracker } from "@/hooks/useHandTracker";
 import { useRelay } from "@/hooks/useRelay";
 import { useSubtitle } from "@/hooks/useSubtitle";
 import { useWakeLock } from "@/hooks/useWakeLock";
-import { type GestureTestRow, getDb } from "@/lib/db";
+import { type GestureTestRow, getDb, USER_NAME_KEY } from "@/lib/db";
 import {
   type ClassifyResult,
   classify,
@@ -73,7 +73,6 @@ import {
 
 type Tab = "recognize" | "train" | "test";
 const VOCAB_KEY = "gesture-vocab";
-const NAME_KEY = "user-name";
 const TEST_N = 10;
 
 export function GestureApp() {
@@ -137,7 +136,7 @@ export function GestureApp() {
       )
       .catch(() => {});
     getDb()
-      .settings.get(NAME_KEY)
+      .settings.get(USER_NAME_KEY)
       .then((r) => r && setUserName(r.value as string))
       .catch(() => {});
     const room = new URLSearchParams(location.search).get("room");
@@ -585,7 +584,7 @@ export function GestureApp() {
             onChange={(e) => {
               setUserName(e.target.value);
               getDb()
-                .settings.put({ key: NAME_KEY, value: e.target.value })
+                .settings.put({ key: USER_NAME_KEY, value: e.target.value })
                 .catch(() => {});
             }}
             className="h-11 w-full rounded-(--radius-control) border border-border bg-surface px-3 focus:border-primary focus:outline-none"

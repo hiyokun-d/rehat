@@ -326,3 +326,18 @@ runs over the same Wi-Fi relay as everything else.
 - **Trade-off:** faster = more wrong words, especially with confidence at 25%. Two signs done
   without any pause merge into one clip (early accept then answers only the first).
 - All numbers *tuned by testing* on SYNTHETIC data. Measure with "ms setelah tangan berhenti".
+
+## Missing everyday words + phrases (2026-11-25)
+
+- The model's 250 signs are toddler first words (no I/ME/YOU/NAME/FRIEND...). Checked against
+  `public/asl/signs.json`. It DOES have `minemy` (my/mine), `thankyou`, `please`, `hello`,
+  `fine`, `not`, `hungry`, `thirsty`.
+- **Kata tambahan (`customSigns.ts`):** 26 words the user records 3x (min 2). Features = the same
+  window the model reads (hand + elbow + wrist), relative to the mouth centre / mouth width.
+  DTW nearest recording; accepted if distance <= max(0.15, 1.5x the spread of your own repeats)
+  (*tuned by testing* on SYNTHETIC data). A match beats the model. While a partial sign looks
+  like a recorded word, early accept waits. Works only for the person who recorded.
+- **Phrases:** the last signs are replaced by a natural sentence, e.g. MY NAME ->
+  "nama saya {nama}", NICE MEET YOU, I LOVE YOU, I NEED HELP, I NOT UNDERSTAND. Written by the
+  team, not checked by a Deaf signer (ASSUMPTION). Hints per word are memory aids, not lessons.
+- Name is shared with "Kata saya" (`USER_NAME_KEY`). Recordings live in Dexie `aslCustom`.

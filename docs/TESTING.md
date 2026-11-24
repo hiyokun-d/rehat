@@ -108,3 +108,5 @@ Phone: `https://<LAN IP>:3443/gesture`, tap Mulai, allow camera + motion.
       hand stays up. **Pass:** 3 words. Try "Jeda" 140 / 200 / 300 ms: note speed vs wrong words.
 - [ ] "Kenali sebelum isyarat selesai" on vs off, 10 signs each: count correct words and note
       how many show "dikenali sebelum isyarat selesai".
+- [ ] Kata tambahan: record NAME 3x, then sign MY (model) + NAME. **Pass:** subtitle shows
+      "nama saya <your name>" and it is spoken. Note false matches over 10 unrelated signs.

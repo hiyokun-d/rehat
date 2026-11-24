@@ -55,6 +55,7 @@ export interface AslResultMsg {
   spoken: boolean; // passed the confidence limit on the laptop
   afterStillMs?: number; // hand stopped -> result
   early?: boolean; // accepted before the sign ended
+  phrase?: { replace: number; text: string }; // the last `replace` words became this sentence
 }
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000;

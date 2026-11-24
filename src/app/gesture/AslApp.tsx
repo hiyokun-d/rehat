@@ -11,12 +11,15 @@ import {
   BookOpen,
   Camera,
   Cat,
+  Circle,
   Eye,
   Link2,
+  MessageSquarePlus,
   PersonStanding,
   Settings2,
   Sparkles,
   Target,
+  Trash2,
   Volume2,
   Zap,
 } from "lucide-react";
@@ -44,9 +47,21 @@ import { useCamera } from "@/hooks/useCamera";
 import { useRelay } from "@/hooks/useRelay";
 import { useSubtitle } from "@/hooks/useSubtitle";
 import { useWakeLock } from "@/hooks/useWakeLock";
+import {
+  CUSTOM_PREFIX,
+  CUSTOM_WORDS,
+  type CustomKey,
+  type CustomSign,
+  completeSentence,
+  MIN_SAMPLES,
+  matchCustom,
+  PHRASES,
+  signFeatures,
+} from "@/lib/asl/customSigns";
 import { glossEn, glossId } from "@/lib/asl/glossId";
 import { MotionGate } from "@/lib/asl/motionGate";
 import { PhoneLocator } from "@/lib/asl/phoneLocator";
+import type { AslWindow } from "@/lib/asl/preprocess";
 import {
   type AslFrameMsg,
   type AslImuMsg,
@@ -56,6 +71,7 @@ import {
   unpackFrame,
 } from "@/lib/asl/remote";
 import { syntheticFrame } from "@/lib/asl/synthetic";
+import { getDb, USER_NAME_KEY } from "@/lib/db";
 import type { TimedValue } from "@/lib/gesture/phoneHand";
 import { PhoneSource } from "@/lib/sensor/phoneSource";
 import { speak, unlockSpeech } from "@/lib/speech";
@@ -65,6 +81,7 @@ type Role = "local" | "host" | "viewer"; // host = laptop sharing its tracker; v
 const FRAME_SEND_MS = 66; // ~15 fps of landmarks to the phone
 const STATUS_SEND_MS = 250;
 const REMOTE_STALE_MS = 1500;
+const RECORD_TARGET = 3; // samples per user word
 
 /** External dictionary (opens in a new tab): videos of each sign. */
 const howTo = (sign: string) =>
@@ -134,6 +151,57 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
   }, [view]);
 
   const localCam = camera.state === "on";
+
+  // User-recorded words (customSigns.ts) + phrase completion ("MY NAME" -> "nama saya Hiyo").
+  const [customs, setCustoms] = useState<CustomSign[]>([]);
+  const [recordKey, setRecordKey] = useState<CustomKey | null>(null);
+  const [userName, setUserName] = useState("");
+  const tokens = useRef<string[]>([]); // signs behind the subtitle words, for phrase matching
+  const reloadCustoms = () =>
+    getDb()
+      .aslCustom.toArray()
+      .then(setCustoms)
+      .catch(() => {});
+  useEffect(() => {
+    getDb()
+      .aslCustom.toArray()
+      .then(setCustoms)
+      .catch(() => {});
+    getDb()
+      .settings.get(USER_NAME_KEY)
+      .then((r) => r && setUserName(r.value as string))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!subtitle.words.length) tokens.current = []; // subtitle cleared after a pause
+  }, [subtitle.words.length]);
+  const countOf = (key: CustomKey) =>
+    customs.filter((c) => c.key === key).length;
+  const saveSample = (key: CustomKey, w: AslWindow) => {
+    const { frames, feat } = signFeatures(w);
+    const n = countOf(key) + 1;
+    getDb()
+      .aslCustom.add({
+        key,
+        frames,
+        feat: Array.from(feat),
+        createdAt: new Date().toISOString(),
+      })
+      .then(reloadCustoms)
+      .catch(() => {});
+    if (n >= RECORD_TARGET) setRecordKey(null);
+  };
+  /** Adds a word to the subtitle; if it completes a phrase, the phrase replaces those words. */
+  const addWord = (token: string, speakIt: boolean) => {
+    tokens.current = [...tokens.current, token];
+    const ph = completeSentence(tokens.current, userName, lang);
+    if (ph) {
+      tokens.current = [];
+      subtitle.replaceLast(ph.replace - 1, ph.text);
+    } else subtitle.add(label(token));
+    if (speakIt) say(ph ? ph.text : label(token));
+    return ph;
+  };
   const relay = useRelay({
     role: role === "host" ? "screen" : "phone",
     roomId: room,
@@ -174,7 +242,10 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
       else if (m.type === "asl-result") {
         const r = m.payload as AslResultMsg;
         setLast(r);
-        if (r.spoken) {
+        if (r.phrase) {
+          subtitle.replaceLast(r.phrase.replace - 1, r.phrase.text);
+          say(r.phrase.text);
+        } else if (r.spoken) {
           subtitle.add(label(r.top[0].sign));
           say(label(r.top[0].sign));
         }
@@ -220,14 +291,37 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
         if (side !== phoneHand) setPhoneHand(side);
       }
     },
+    holdEarly: customs.length ? (w) => !!matchCustom(w, customs) : undefined,
     onSign: (r) => {
-      setLast(r);
-      const best = r.top[0];
+      // Recording a sample of a user word: store it instead of recognising.
+      if (recordKey && !r.early) {
+        if (r.handFrames >= 4) saveSample(recordKey, r.window);
+        return;
+      }
+      // User-recorded words first (the model does not know them); a match beats the model.
+      const m =
+        !r.early && customs.length ? matchCustom(r.window, customs) : null;
+      const res = m
+        ? {
+            ...r,
+            top: [
+              {
+                sign: CUSTOM_PREFIX + m.key,
+                p: 1 - (0.5 * m.distance) / m.limit,
+              },
+              ...r.top.slice(0, 4),
+            ],
+          }
+        : r;
+      setLast(res);
+      const best = res.top[0];
       // Wrong words spoken out loud are worse than silence: speak only confident results.
-      const spoken = !!best && best.p >= minConf;
+      const spoken = !!best && (!!m || best.p >= minConf);
+      const phrase = spoken ? addWord(best.sign, !phoneConnected) : null; // the phone speaks when mirroring
       if (phoneConnected) {
         const msg: AslResultMsg = {
-          top: r.top,
+          phrase: phrase ?? undefined,
+          top: res.top,
           handFrames: r.handFrames,
           ms: r.ms,
           afterStillMs: r.afterStillMs,
@@ -235,10 +329,6 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
           spoken,
         };
         relay.send("asl-result", msg);
-      }
-      if (spoken) {
-        subtitle.add(label(best.sign));
-        if (!phoneConnected) say(label(best.sign)); // the phone speaks when it is mirroring
       }
     },
   });
@@ -388,6 +478,12 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
         )}
         {phoneHand && <Badge tone="warning">HP di tangan {phoneHand}</Badge>}
         {asl.gated && <Badge tone="success">Isyarat cepat: gyro HP</Badge>}
+        {recordKey && (
+          <Badge tone="warning">
+            Rekam "{label(CUSTOM_PREFIX + recordKey)}" ({countOf(recordKey) + 1}
+            /{RECORD_TARGET}): lakukan isyaratnya
+          </Badge>
+        )}
         {localCam && (
           <Badge>
             {asl.status === "loading"
@@ -713,6 +809,108 @@ export function AslApp({ embedded = false }: { embedded?: boolean } = {}) {
                 {glossEn(target)}" (SignASL.org)
               </a>
             )}
+          </Disclosure>
+
+          <Disclosure
+            title="Kata tambahan (rekam sendiri)"
+            icon={MessageSquarePlus}
+          >
+            <p className="mb-3 text-sm text-muted">
+              Model tidak mengenal kata-kata ini (mis. saya, kamu, nama, teman).
+              Rekam tiap kata {RECORD_TARGET}x dengan gayamu sendiri; minimal{" "}
+              {MIN_SAMPLES}x supaya dipakai. Hanya mengenali kamu, bukan orang
+              lain.
+            </p>
+            <label className="mb-3 block">
+              <span className="mb-1 block font-medium">
+                Nama kamu (untuk "nama saya ...")
+              </span>
+              <input
+                value={userName}
+                onChange={(e) => {
+                  setUserName(e.target.value);
+                  getDb()
+                    .settings.put({ key: USER_NAME_KEY, value: e.target.value })
+                    .catch(() => {});
+                }}
+                className="h-11 w-full rounded-(--radius-control) border border-border bg-surface px-3 focus:border-primary focus:outline-none"
+              />
+            </label>
+            {!localCam && (
+              <p className="mb-2 text-sm">
+                Nyalakan kamera di perangkat ini untuk merekam.
+              </p>
+            )}
+            <ul className="max-h-96 space-y-2 overflow-y-auto">
+              {CUSTOM_WORDS.map((w) => {
+                const n = countOf(w.key);
+                return (
+                  <li
+                    key={w.key}
+                    className="rounded-(--radius-control) border border-border p-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">
+                        {w.id} <span className="text-muted">({w.en})</span>
+                      </span>
+                      <Badge tone={n >= MIN_SAMPLES ? "success" : "neutral"}>
+                        {n}/{RECORD_TARGET}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-muted">{w.hint}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant={recordKey === w.key ? "primary" : "secondary"}
+                        icon={Circle}
+                        disabled={!localCam || asl.status !== "ready"}
+                        onClick={() =>
+                          setRecordKey(recordKey === w.key ? null : w.key)
+                        }
+                      >
+                        {recordKey === w.key ? "Batal" : "Rekam"}
+                      </Button>
+                      {n > 0 && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          icon={Trash2}
+                          onClick={() =>
+                            getDb()
+                              .aslCustom.where("key")
+                              .equals(w.key)
+                              .delete()
+                              .then(reloadCustoms)
+                              .catch(() => {})
+                          }
+                        >
+                          Hapus
+                        </Button>
+                      )}
+                      <a
+                        href={howTo(CUSTOM_PREFIX + w.key)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-primary underline"
+                      >
+                        <BookOpen size={16} aria-hidden /> Lihat caranya
+                      </a>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-3 mb-1 text-sm font-medium">
+              Kalimat yang dilengkapi otomatis
+            </p>
+            <ul className="text-sm text-muted">
+              {PHRASES.map((p) => (
+                <li key={p.seq.join(" ")}>
+                  {p.seq.join(" ")} → "
+                  {p[lang].replace("{name}", userName || "…")}"
+                </li>
+              ))}
+            </ul>
           </Disclosure>
 
           <Disclosure title="Pengaturan" icon={Settings2}>

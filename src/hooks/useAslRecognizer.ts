@@ -31,6 +31,7 @@ import {
   MotionGate,
 } from "@/lib/asl/motionGate";
 import {
+  type AslWindow,
   type FrameChecks,
   frameChecks,
   holisticFrame,
@@ -66,6 +67,8 @@ export interface AslSignResult extends AslPrediction {
   afterStillMs?: number;
   /** Accepted from the live guess before the sign ended. */
   early?: boolean;
+  /** The model input, for matching user-recorded words (customSigns.ts). */
+  window: AslWindow;
 }
 
 export type CutMode = "pause" | "hand-out";
@@ -80,6 +83,8 @@ export function useAslRecognizer(
     stillMs: number; // "pause" mode: how long still = end of sign
     early: boolean;
     minConf: number; // early guesses must reach this
+    /** true = this partial sign looks like a user-recorded word: do not accept early. */
+    holdEarly?: (w: AslWindow) => boolean;
     onSign: (r: AslSignResult) => void;
     onFrame?: (res: HolisticLandmarkerResult) => void;
   },
@@ -139,6 +144,7 @@ export function useAslRecognizer(
           ...p,
           frames: frames.length,
           handFrames: w.length,
+          window: w,
           ...extra,
         }),
       );
@@ -293,7 +299,8 @@ export function useAslRecognizer(
           busy = true;
           const id = sign.current.id;
           const n = current.length;
-          classify(toWindow(current))
+          const win = toWindow(current);
+          classify(win)
             .then((p) => {
               const s = sign.current;
               if (s.id !== id) return; // that sign already ended
@@ -307,7 +314,8 @@ export function useAslRecognizer(
                 best &&
                 n >= EARLY_MIN_FRAMES &&
                 best.p >= minConf &&
-                best.sign === s.prevLive
+                best.sign === s.prevLive &&
+                !tune.current.holdEarly?.(win)
               ) {
                 s.fired = true;
                 onSignRef.current({
@@ -315,6 +323,7 @@ export function useAslRecognizer(
                   frames: n,
                   handFrames: n,
                   early: true,
+                  window: win,
                 });
               }
               s.prevLive = best?.sign ?? "";

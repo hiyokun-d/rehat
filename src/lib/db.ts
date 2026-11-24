@@ -2,6 +2,7 @@
 // unless the user exports it. Why not localStorage: ~5 MB cap and synchronous writes; one
 // minute of raw samples is already ~300 KB.
 import Dexie, { type EntityTable } from "dexie";
+import type { CustomSign } from "./asl/customSigns";
 import type { Template } from "./gesture/classifier";
 import type { Recording } from "./sensor/recording";
 
@@ -36,7 +37,11 @@ export interface GestureTestRow {
   latencyMs: number;
 }
 
+/** Settings key shared by both Mode 2 tabs (fills "nama saya ..."). */
+export const USER_NAME_KEY = "user-name";
+
 type RehatDb = Dexie & {
+  aslCustom: EntityTable<CustomSign, "id">;
   templates: EntityTable<Template, "id">;
   gestureTests: EntityTable<GestureTestRow, "id">;
   settings: EntityTable<SettingRow, "key">;
@@ -59,6 +64,7 @@ export function getDb(): RehatDb {
       templates: "++id, word",
       gestureTests: "++id, runId",
     });
+    db.version(4).stores({ aslCustom: "++id, key" }); // user-recorded ASL words
   }
   return db;
 }

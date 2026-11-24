@@ -15,6 +15,12 @@ export function useSubtitle() {
   }, [words]);
 
   const add = useCallback((w: string) => setWords((ws) => [...ws, w]), []);
+  /** Replace the last `n` words with `w` (phrase completion: "saya nama" -> "nama saya Hiyo"). */
+  const replaceLast = useCallback(
+    (n: number, w: string) =>
+      setWords((ws) => [...ws.slice(0, ws.length - n), w]),
+    [],
+  );
 
-  return { words, add };
+  return { words, add, replaceLast };
 }

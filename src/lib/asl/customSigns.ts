@@ -5,29 +5,164 @@
 // Features come from the SAME 64-frame window the model gets (toWindow), so nothing extra is
 // tracked: dominant hand (21 pts) + elbow + wrist, relative to the mouth centre and scaled by
 // mouth width (so standing a bit further/closer or to the side matters less).
-import type { AslWindow } from "./preprocess";
-import { LIPS, N_COLS } from "./preprocess";
+import { type AslWindow, LIPS, N_COLS } from "./preprocess";
 
 export const CUSTOM_PREFIX = "custom:";
 
-/** The words we let users record. `id` / `en` are what is shown and spoken. */
+/**
+ * Everyday words missing from the model's 250 (checked against signs.json on 2026-11-25).
+ * `hint` is a short memory aid written by the team, NOT a sign lesson: always check the
+ * SignASL.org video ("Lihat caranya") and, ideally, a Deaf signer. Many signs have variants.
+ */
 export const CUSTOM_WORDS = [
-  {
-    key: "MY",
-    id: "saya (punya)",
-    en: "my",
-    hint: "Telapak terbuka ditempel di dada.",
-  },
   { key: "I", id: "saya", en: "I", hint: "Telunjuk menunjuk dada sendiri." },
+  {
+    key: "ME",
+    id: "aku",
+    en: "me",
+    hint: "Telunjuk menunjuk dada sendiri (sama dengan I).",
+  },
+  {
+    key: "YOU",
+    id: "kamu",
+    en: "you",
+    hint: "Telunjuk menunjuk lawan bicara.",
+  },
   {
     key: "NAME",
     id: "nama",
     en: "name",
     hint: "Dua jari (H) mengetuk dua jari tangan lain, 2x.",
   },
+  {
+    key: "FRIEND",
+    id: "teman",
+    en: "friend",
+    hint: "Telunjuk bengkok saling mengait, dibalik, mengait lagi.",
+  },
+  {
+    key: "LOVE",
+    id: "sayang",
+    en: "love",
+    hint: "Kedua kepalan menyilang di dada.",
+  },
+  {
+    key: "HELP",
+    id: "tolong",
+    en: "help",
+    hint: "Kepalan jempol tegak di atas telapak, diangkat bersama.",
+  },
+  {
+    key: "WANT",
+    id: "mau",
+    en: "want",
+    hint: "Dua tangan cakar, telapak ke atas, ditarik ke badan.",
+  },
+  {
+    key: "NEED",
+    id: "butuh",
+    en: "need",
+    hint: "Telunjuk bengkok (X) ditekuk ke bawah 2x.",
+  },
+  {
+    key: "WHAT",
+    id: "apa",
+    en: "what",
+    hint: "Kedua telapak ke atas, digoyang sedikit ke samping.",
+  },
+  {
+    key: "HOW",
+    id: "bagaimana",
+    en: "how",
+    hint: "Punggung jari bengkok bertemu, diputar ke depan.",
+  },
+  {
+    key: "SORRY",
+    id: "maaf",
+    en: "sorry",
+    hint: "Kepalan (A) memutar di dada.",
+  },
+  {
+    key: "GOOD",
+    id: "baik",
+    en: "good",
+    hint: "Telapak dari dagu turun ke telapak tangan lain.",
+  },
+  {
+    key: "NICE",
+    id: "senang",
+    en: "nice",
+    hint: "Telapak mengusap telapak tangan lain ke depan.",
+  },
+  {
+    key: "MEET",
+    id: "bertemu",
+    en: "meet",
+    hint: "Dua telunjuk tegak saling mendekat.",
+  },
+  {
+    key: "EAT",
+    id: "makan",
+    en: "eat",
+    hint: "Ujung jari menguncup mengetuk mulut.",
+  },
+  {
+    key: "WORK",
+    id: "kerja",
+    en: "work",
+    hint: "Kepalan mengetuk pergelangan kepalan lain, 2x.",
+  },
+  {
+    key: "SCHOOL",
+    id: "sekolah",
+    en: "school",
+    hint: "Telapak menepuk telapak lain, 2x.",
+  },
+  { key: "KNOW", id: "tahu", en: "know", hint: "Ujung jari mengetuk dahi." },
+  {
+    key: "UNDERSTAND",
+    id: "mengerti",
+    en: "understand",
+    hint: "Kepalan di dahi, telunjuk dijentikkan ke atas.",
+  },
+  {
+    key: "LEARN",
+    id: "belajar",
+    en: "learn",
+    hint: "Jari 'mengambil' dari telapak, dibawa ke dahi.",
+  },
+  {
+    key: "AGAIN",
+    id: "lagi",
+    en: "again",
+    hint: "Tangan bengkok dibalik ke telapak tangan lain.",
+  },
+  {
+    key: "MORE",
+    id: "tambah",
+    en: "more",
+    hint: "Ujung jari kedua tangan menguncup, diketuk 2x.",
+  },
+  {
+    key: "DEAF",
+    id: "Tuli",
+    en: "Deaf",
+    hint: "Telunjuk menyentuh dekat telinga lalu dekat mulut.",
+  },
+  {
+    key: "FAMILY",
+    id: "keluarga",
+    en: "family",
+    hint: "Dua tangan F memutar ke depan sampai bertemu kelingking.",
+  },
+  {
+    key: "SIGN",
+    id: "bahasa isyarat",
+    en: "sign",
+    hint: "Dua telunjuk berputar bergantian di depan dada.",
+  },
 ] as const;
 export type CustomKey = (typeof CUSTOM_WORDS)[number]["key"];
-
 export const MIN_SAMPLES = 2; // need 2 to know how much YOUR repeats differ (the threshold)
 
 export interface CustomSign {
@@ -170,20 +305,74 @@ export function matchCustom(
   return best;
 }
 
-/** Sentence rule: MY NAME (or I NAME) -> the user's name is added. */
+/** Model signs that mean the same as a custom word, so both count in phrases. */
+const ALIASES: Record<string, string> = {
+  minemy: "MY",
+  hesheit: "HE",
+  weus: "WE",
+};
+/** Word token (model sign or "custom:KEY") -> phrase key. */
+export const phraseKey = (token: string) =>
+  token.startsWith(CUSTOM_PREFIX)
+    ? token.slice(CUSTOM_PREFIX.length)
+    : (ALIASES[token] ?? token.toUpperCase());
+
+/**
+ * Short phrases: when the last signs match `seq`, they are replaced by a natural sentence.
+ * ASL word order and Indonesian word order differ, so word-by-word is often wrong. `{name}` =
+ * the user's name. Written by the team, not by a Deaf signer: ASSUMPTION until checked.
+ */
+export const PHRASES: { seq: string[]; id: string; en: string }[] = [
+  { seq: ["MY", "NAME"], id: "nama saya {name}", en: "my name is {name}" },
+  { seq: ["I", "NAME"], id: "nama saya {name}", en: "my name is {name}" },
+  { seq: ["ME", "NAME"], id: "nama saya {name}", en: "my name is {name}" },
+  {
+    seq: ["YOU", "NAME", "WHAT"],
+    id: "siapa namamu?",
+    en: "what is your name?",
+  },
+  {
+    seq: ["NICE", "MEET", "YOU"],
+    id: "senang bertemu denganmu",
+    en: "nice to meet you",
+  },
+  { seq: ["I", "LOVE", "YOU"], id: "aku sayang kamu", en: "I love you" },
+  { seq: ["HOW", "YOU"], id: "apa kabar?", en: "how are you?" },
+  { seq: ["I", "FINE"], id: "saya baik-baik saja", en: "I'm fine" },
+  { seq: ["I", "NEED", "HELP"], id: "saya butuh bantuan", en: "I need help" },
+  { seq: ["HELP", "PLEASE"], id: "tolong bantu saya", en: "please help me" },
+  { seq: ["I", "DEAF"], id: "saya Tuli", en: "I am Deaf" },
+  {
+    seq: ["I", "NOT", "UNDERSTAND"],
+    id: "saya tidak mengerti",
+    en: "I don't understand",
+  },
+  { seq: ["AGAIN", "PLEASE"], id: "tolong ulangi", en: "again, please" },
+  { seq: ["YOU", "FRIEND"], id: "kamu temanku", en: "you are my friend" },
+  { seq: ["I", "WANT", "EAT"], id: "saya mau makan", en: "I want to eat" },
+  { seq: ["I", "HUNGRY"], id: "saya lapar", en: "I'm hungry" },
+  { seq: ["I", "THIRSTY"], id: "saya haus", en: "I'm thirsty" },
+  { seq: ["I", "SORRY"], id: "saya minta maaf", en: "I'm sorry" },
+];
+
+/** Longest phrase matching the end of `tokens`, with the name filled in. */
 export function completeSentence(
-  keys: string[],
+  tokens: string[],
   userName: string,
   lang: "id" | "en",
-): string | null {
-  const last2 = keys.slice(-2).join(" ");
-  if (
-    last2 !== `${CUSTOM_PREFIX}MY ${CUSTOM_PREFIX}NAME` &&
-    last2 !== `${CUSTOM_PREFIX}I ${CUSTOM_PREFIX}NAME`
-  )
-    return null;
-  const name = userName.trim() || "…";
-  return lang === "id" ? `nama saya ${name}` : `my name is ${name}`;
+): { replace: number; text: string } | null {
+  const keys = tokens.map(phraseKey);
+  let best: { replace: number; text: string } | null = null;
+  for (const p of PHRASES) {
+    if (p.seq.length > keys.length || (best && p.seq.length <= best.replace))
+      continue;
+    if (p.seq.every((k, i) => keys[keys.length - p.seq.length + i] === k))
+      best = {
+        replace: p.seq.length,
+        text: p[lang].replace("{name}", userName.trim() || "…"),
+      };
+  }
+  return best;
 }
 
 export const customWord = (sign: string) =>

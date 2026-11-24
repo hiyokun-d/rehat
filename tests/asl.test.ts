@@ -257,3 +257,67 @@ describe("faster signing: camera only (hand pauses, not lowered)", () => {
     ).toBe(0);
   });
 });
+
+import {
+  completeSentence,
+  matchCustom,
+  signFeatures,
+} from "../src/lib/asl/customSigns";
+
+describe("user-recorded words + phrases", () => {
+  // SYNTHETIC windows: lips fixed, dominant hand moves along a path.
+  const win = (path: (k: number) => [number, number], n = 20, noise = 0) => {
+    const xy = new Float32Array(INPUT_SIZE * N_COLS * 2);
+    for (let t = 0; t < n; t++) {
+      for (let c = 0; c < 40; c++) {
+        xy[(t * N_COLS + c) * 2] = 0.45 + c * 0.003; // mouth ~0.03 wide
+        xy[(t * N_COLS + c) * 2 + 1] = 0.3;
+      }
+      const [hx, hy] = path(t / (n - 1));
+      for (let c = 40; c < N_COLS; c++) {
+        xy[(t * N_COLS + c) * 2] =
+          hx + (c - 40) * 0.003 + (Math.random() - 0.5) * noise;
+        xy[(t * N_COLS + c) * 2 + 1] = hy + (Math.random() - 0.5) * noise;
+      }
+    }
+    const mask = new Float32Array(INPUT_SIZE).fill(1, 0, n);
+    return { xy, mask, length: n };
+  };
+  const toChest = (k: number): [number, number] => [0.5, 0.4 + 0.3 * k];
+  const sideways = (k: number): [number, number] => [0.3 + 0.4 * k, 0.5];
+  const rec = (key: "I" | "NAME", w: ReturnType<typeof win>) => {
+    const f = signFeatures(w);
+    return { key, frames: f.frames, feat: Array.from(f.feat), createdAt: "" };
+  };
+  const signs = [
+    rec("I", win(toChest, 18, 0.01)),
+    rec("I", win(toChest, 22, 0.01)),
+    rec("NAME", win(sideways, 20, 0.01)),
+    rec("NAME", win(sideways, 24, 0.01)),
+  ];
+  test("a new repeat matches the right word", () => {
+    expect(matchCustom(win(toChest, 20, 0.01), signs)?.key).toBe("I");
+    expect(matchCustom(win(sideways, 21, 0.01), signs)?.key).toBe("NAME");
+  });
+  test("something else matches nothing", () => {
+    expect(
+      matchCustom(
+        win((k) => [0.8 - 0.1 * k, 0.9 - 0.6 * k]),
+        signs,
+      ),
+    ).toBeNull();
+  });
+  test("MY NAME (model 'minemy' + recorded NAME) -> name filled in", () => {
+    expect(
+      completeSentence(["hello", "minemy", "custom:NAME"], "Hiyo", "id"),
+    ).toEqual({
+      replace: 2,
+      text: "nama saya Hiyo",
+    });
+    expect(
+      completeSentence(["custom:I", "custom:LOVE", "custom:YOU"], "", "en")
+        ?.text,
+    ).toBe("I love you");
+    expect(completeSentence(["custom:YOU"], "Hiyo", "id")).toBeNull();
+  });
+});
