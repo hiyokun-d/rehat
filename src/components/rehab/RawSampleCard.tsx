@@ -39,7 +39,7 @@ export function RawSampleCard({
     ...(extra ?? []),
   ];
   return (
-    <Card title="Data mentah" icon={Activity}>
+    <Card title="Data Awal" icon={Activity}>
       <dl className="space-y-1.5 text-base">
         {rows.map(([k, v]) => (
           <div

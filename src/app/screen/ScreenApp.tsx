@@ -3,9 +3,11 @@
 // settings. It never decides anything about safety: the phone does, the screen displays.
 import {
   Activity,
+  Cpu,
   Gauge,
   Hand,
   HandHelping,
+  History,
   LineChart,
   Ruler,
 } from "lucide-react";
@@ -18,10 +20,19 @@ import { DeskCamera, useDeskImu } from "@/components/gesture/DeskCamera";
 import { GestureStatePill } from "@/components/gesture/GestureStatePill";
 import { SubtitleBar } from "@/components/gesture/SubtitleBar";
 import { type ChartPoint, LiveChart } from "@/components/LiveChart";
-import { PairingCard, RoomCodeDisplay } from "@/components/RoomCodeDisplay";
+import { LiveMultiChart, type SeriesPoint } from "@/components/LiveMultiChart";
+import {
+  PairingCard,
+  PhoneCard,
+  RoomCodeDisplay,
+} from "@/components/RoomCodeDisplay";
+import { AngleGauge } from "@/components/rehab/AngleGauge";
+import { CapabilityList } from "@/components/rehab/CapabilityList";
 import { EnvelopeCard } from "@/components/rehab/EnvelopeCard";
+import { extrasRows } from "@/components/rehab/extrasRows";
 import { RawSampleCard } from "@/components/rehab/RawSampleCard";
 import { RecordingsCard } from "@/components/rehab/RecordingsCard";
+import { SessionHistory } from "@/components/rehab/SessionHistory";
 import { ValidationPanel } from "@/components/rehab/ValidationPanel";
 import { Alert } from "@/components/ui/Alert";
 import { Card } from "@/components/ui/Card";
@@ -29,6 +40,7 @@ import { Screen } from "@/components/ui/Screen";
 import { Stat } from "@/components/ui/Stat";
 import { Tabs } from "@/components/ui/Tabs";
 import { useRelay } from "@/hooks/useRelay";
+import { useSessions } from "@/hooks/useSessions";
 import { useSubtitle } from "@/hooks/useSubtitle";
 import { getDb } from "@/lib/db";
 import type {
@@ -44,13 +56,36 @@ import type {
   TelemetryPoint,
 } from "@/lib/rehab/messages";
 import { DEFAULT_CONFIG, type SessionConfig } from "@/lib/rehab/session";
+import type { SessionSummary } from "@/lib/rehab/summary";
 import { downloadJson, stamp } from "@/lib/sensor/recording";
 
-type Tab = "live" | "validate" | "raw" | "gesture" | "asl";
+type Tab = "live" | "history" | "validate" | "raw" | "gesture" | "asl";
 const ROOM_KEY = "rehat-room";
 /** No state message from a connected phone for this long = we are not seeing it any more. */
 const STALE_MS = 1500;
 const CHART_KEEP_MS = 12_000;
+
+/** Store sessions from a phone (or a file); keep the therapist's note on re-sync. */
+async function storeSessions(list: SessionSummary[]): Promise<string[]> {
+  const db = getDb();
+  const at = new Date().toISOString();
+  const old = await db.sessions.bulkGet(list.map((x) => x.id));
+  await db.sessions.bulkPut(
+    list.map((x, i) => ({
+      ...x,
+      syncedAt: undefined,
+      receivedAt: at,
+      therapistNote: old[i]?.therapistNote,
+    })),
+  );
+  return list.map((x) => x.id);
+}
+
+function trim<T extends { t: number }>(arr: T[]) {
+  if (!arr.length) return;
+  const cutoff = arr[arr.length - 1].t - CHART_KEEP_MS;
+  while (arr.length && arr[0].t < cutoff) arr.shift();
+}
 
 export function ScreenApp() {
   const [ready, setReady] = useState(false);
@@ -69,6 +104,10 @@ export function ScreenApp() {
   const subtitle = useSubtitle();
   const deskImu = useDeskImu();
   const points = useRef<ChartPoint[]>([]);
+  const accel = useRef<SeriesPoint[]>([]);
+  const gyro = useRef<SeriesPoint[]>([]);
+  const linear = useRef<SeriesPoint[]>([]);
+  const sessions = useSessions();
   const latest = useRef<TelemetryPoint | null>(null);
   const lastStateAt = useRef(0);
 
@@ -92,9 +131,25 @@ export function ScreenApp() {
             sessionStorage.setItem(ROOM_KEY, m.roomId);
           } catch {}
           break;
-        case "hello":
-          setInfo(p as PhoneInfo);
+        case "hello": {
+          const hi = p as PhoneInfo;
+          setInfo(hi);
           relay.send("config", config);
+          // Ask for the history we do not have yet (see messages.ts for the sync flow).
+          getDb()
+            .sessions.where("deviceId")
+            .equals(hi.deviceId)
+            .primaryKeys()
+            .then((have) =>
+              relay.send("sync-request", { deviceId: hi.deviceId, have }),
+            )
+            .catch(() => {});
+          break;
+        }
+        case "sessions":
+          storeSessions((p as PhonePayloads["sessions"]).sessions)
+            .then((ids) => relay.send("sessions-ack", { ids }))
+            .catch(() => {});
           break;
         case "state":
           lastStateAt.current = performance.now();
@@ -103,14 +158,17 @@ export function ScreenApp() {
         case "telemetry":
           for (const pt of (p as PhonePayloads["telemetry"]).points) {
             points.current.push({ t: pt.t, v: pt.angleDeg });
+            accel.current.push({ t: pt.t, v: [pt.ax, pt.ay, pt.az] });
+            gyro.current.push({ t: pt.t, v: [pt.gx, pt.gy, pt.gz] });
+            if (pt.lx !== undefined)
+              linear.current.push({
+                t: pt.t,
+                v: [pt.lx, pt.ly ?? 0, pt.lz ?? 0],
+              });
             latest.current = pt;
           }
-          if (points.current.length > 0) {
-            const cutoff =
-              points.current[points.current.length - 1].t - CHART_KEEP_MS;
-            while (points.current.length && points.current[0].t < cutoff)
-              points.current.shift();
-          }
+          trim(points.current);
+          for (const r of [accel, gyro, linear]) trim(r.current);
           break;
         case "breach":
           setBreaches((b) => [p as BreachEvent, ...b].slice(0, 8));
@@ -163,7 +221,6 @@ export function ScreenApp() {
   // dropping off the relay mid-exercise all show as "paused" here.
   const linkLost = phone?.phase === "running" && (stale || noPhone);
   const paused = phone?.phase === "paused" || linkLost;
-  const lastBreach = breaches[0];
 
   return (
     <Screen
@@ -206,14 +263,25 @@ export function ScreenApp() {
         <PairingCard
           code={relay.roomId}
           path={tab === "gesture" ? "/gesture" : "/phone"}
+          minimizable
+        />
+      )}
+      {!noPhone && info && tab !== "asl" && tab !== "gesture" && (
+        <PhoneCard
+          label={info.deviceLabel}
+          hz={phone?.rate.hz ?? null}
+          battery={phone?.extras.battery ?? null}
+          sessions={sessions.filter((x) => x.deviceId === info.deviceId).length}
+          stale={stale}
         />
       )}
 
       <Tabs<Tab>
         items={[
           { id: "live", label: "Live", icon: LineChart },
+          { id: "history", label: "Riwayat", icon: History },
           { id: "validate", label: "Validasi", icon: Ruler },
-          { id: "raw", label: "Data mentah", icon: Activity },
+          { id: "raw", label: "Data Awal", icon: Activity },
           { id: "gesture", label: "Mode 2: Gestur", icon: Hand },
           { id: "asl", label: "ASL siap pakai", icon: HandHelping },
         ]}
@@ -228,21 +296,27 @@ export function ScreenApp() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
           <div className="space-y-4">
             <Card>
-              <div className="grid grid-cols-2 gap-4">
-                <Stat
-                  label="Sudut"
-                  value={phone ? phone.angleDeg.toFixed(0) : "–"}
-                  unit="°"
-                  size="xl"
-                  tone={
-                    lastBreach &&
-                    phone &&
-                    phone.angleDeg > config.envelope.maxAngleDeg
-                      ? "danger"
-                      : "default"
-                  }
+              <div className="grid items-center gap-4 sm:grid-cols-[minmax(180px,240px)_1fr]">
+                <AngleGauge
+                  angleDeg={phone ? phone.angleDeg : null}
+                  limitDeg={config.envelope.maxAngleDeg}
+                  over={!!phone && phone.angleDeg > config.envelope.maxAngleDeg}
                 />
-                <Stat label="Repetisi" value={phone?.reps ?? "–"} size="xl" />
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                  <Stat label="Repetisi" value={phone?.reps ?? "–"} size="xl" />
+                  <Stat
+                    label="Kecepatan"
+                    value={phone ? phone.velDegS.toFixed(0) : "–"}
+                    unit="°/s"
+                    size="xl"
+                  />
+                  <Stat
+                    label="Sudut maks"
+                    value={phone ? phone.maxAngleDeg.toFixed(0) : "–"}
+                    unit="°"
+                    size="xl"
+                  />
+                </div>
               </div>
             </Card>
             <Card title="Sudut, 10 detik terakhir" icon={Gauge}>
@@ -279,6 +353,26 @@ export function ScreenApp() {
           </div>
           <EnvelopeCard config={config} onChange={setConfig} />
         </div>
+      )}
+
+      {tab === "history" && (
+        <SessionHistory
+          sessions={sessions}
+          side="screen"
+          onChange={(x) => {
+            getDb()
+              .sessions.put(x)
+              .catch(() => {});
+          }}
+          onDelete={(id) => {
+            getDb()
+              .sessions.delete(id)
+              .catch(() => {});
+          }}
+          onImport={(list) => {
+            storeSessions(list).catch(() => {});
+          }}
+        />
       )}
 
       {tab === "validate" && (
@@ -345,6 +439,31 @@ export function ScreenApp() {
 
       {tab === "raw" && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <Card className="space-y-5 lg:col-span-2">
+            <LiveMultiChart
+              points={accel}
+              title="Akselerasi termasuk gravitasi"
+              unit="m/s²"
+              minRange={12}
+            />
+            <LiveMultiChart
+              points={gyro}
+              title="Kecepatan putar (giroskop)"
+              unit="°/s"
+              minRange={30}
+            />
+            <LiveMultiChart
+              points={linear}
+              title="Akselerasi tanpa gravitasi"
+              unit="m/s²"
+              minRange={2}
+            />
+            <p className="text-xs text-muted">
+              Sumbu mengikuti HP (x kanan, y atas, z keluar layar). Hanya sudut
+              dan kecepatan putar yang dipakai untuk batas. Akselerasi tidak
+              diintegrasi menjadi jarak (drift).
+            </p>
+          </Card>
           <RawSampleCard
             sample={phone?.latest ?? null}
             rate={phone?.rate ?? { hz: 0, dtMedianMs: 0, dtMaxMs: 0 }}
@@ -361,8 +480,12 @@ export function ScreenApp() {
                 info ? (info.hasIndonesianVoice ? "ada" : "tidak ada") : "–",
               ],
               ["Perangkat", info?.userAgent ?? "–"],
+              ...(phone ? extrasRows(phone.extras, phone.lostPackets) : []),
             ]}
           />
+          <Card title="Sensor yang tersedia di HP" icon={Cpu}>
+            <CapabilityList items={info?.capabilities ?? []} />
+          </Card>
           <RecordingsCard />
         </div>
       )}

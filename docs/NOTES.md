@@ -73,7 +73,7 @@ Near θ = 0 the direction is undefined (sin θ ≈ 0), so below 3° we use tilt 
 **Gyro sign is learned, not hard-coded.** Browsers disagree on the sign of rotationRate. During
 the first clear movements (>20°/s, beyond 10°) we compare the gyro-predicted change with the
 accelerometer change; after 15 votes the sign is fixed. Until then the filter uses tilt only.
-The learned sign is shown in "Detail teknis" / "Data mentah" — record it per phone model.
+The learned sign is shown in "Detail teknis" / "Data Awal"; record it per phone model.
 Unit tests cover all four combinations of flipped gyro / flipped gravity.
 
 **Velocity** for the envelope = gyro component perpendicular to gravity (°/s), i.e. how fast the
@@ -341,3 +341,51 @@ runs over the same Wi-Fi relay as everything else.
   "nama saya {nama}", NICE MEET YOU, I LOVE YOU, I NEED HELP, I NOT UNDERSTAND. Written by the
   team, not checked by a Deaf signer (ASSUMPTION). Hints per word are memory aids, not lessons.
 - Name is shared with "Kata saya" (`USER_NAME_KEY`). Recordings live in Dexie `aslCustom`.
+
+## History, transfer, more sensors (2026-11-27)
+
+**Why.** Live-only data dies with the session. The patient (or a caregiver / nurse) needs to
+look back on the phone, and the therapist needs it on the laptop, even when they were not
+connected during the exercise.
+
+**What a session leaves (`src/lib/rehab/summary.ts`).** On "Selesai dan simpan" (or a new
+calibration) the phone stores one `SessionSummary` in Dexie (`sessions`, db v5): reps, each
+rep's peak + duration, limit events with time, pauses, active time, the limits in force,
+battery start/end, `reportedBy` (patient / caregiver, chosen on the home screen; AGENTS.md:
+every log stores the reporter), optional difficulty + note. Plus the DERIVED angle at 5 Hz for
+the chart (*tuned by eye*: enough to see each rep; 5 min ≈ 20 KB). No raw accel/gyro: data
+minimization. Raw recordings stay the separate "Rekam" button for testing.
+Known gap: closing the tab mid-session loses that session (saved on Selesai only).
+
+**Transfer (3 paths, all idempotent by session id).**
+1. Relay sync: the phone joins the room as soon as a code is set (no longer waits for Mulai).
+   `hello` (with a random anonymous device id) -> screen `sync-request` with the ids it has ->
+   phone sends the missing/edited ones (10 per message) -> screen stores, `sessions-ack` ->
+   phone marks them synced. A finished/edited session is pushed immediately. Saved first,
+   sent second: Wi-Fi loss never loses a session.
+2. Share file: "Bagikan" uses the phone share sheet (WhatsApp, email); falls back to download.
+3. Import on the laptop: Riwayat -> "Impor file riwayat". The therapist note survives re-sync.
+
+**What is shown, what is not.** Per session: angle trace with the therapist's limit and limit
+events, peak per rep, reps, active time. Across sessions: peak angle per session, labelled
+"terukur sensor HP, belum divalidasi; bukan ukuran pemulihan". No completion %, no score
+(AGENTS.md: adherence is not a recovery indicator; the app does not judge).
+
+**Pairing.** Laptop: bigger QR + numbered steps; once a phone is in, a strip shows which phone,
+Hz, battery, sessions received. Phone: "Pindai QR di laptop" (BarcodeDetector, Android only; no
+QR library added), or type the code; iPhone users use the Camera app.
+
+**Sensors.** See `docs/SENSORS.md`. New: linear acceleration (`lx/ly/lz`, optional on `Sample`),
+orientation + compass, battery, screen orientation, magnetometer/light if exposed, vibration
+cue (L1, Android). Laptop "Data Awal": live x/y/z charts for accel, gyro, linear accel
+(series colors checked with a colorblind-safety validator; legends carry live values). None of
+the new readings touch the safety logic.
+
+**Visuals.** `AngleGauge` (half circle, limit tick) on the phone and laptop: "how close to the
+limit" readable from across the room. Static history charts are SVG (`charts.tsx`), live ones
+stay canvas.
+
+**Scope flags.** Web Bluetooth/BleSource is Tier 1 work done early on request (untested, no
+firmware). Difficulty + note + therapist note are MVP logging items, kept minimal. The UI kit
+(`src/components/ui`) was already 13 files; new pieces went to `components/` and
+`components/rehab/` instead.

@@ -1,26 +1,39 @@
 "use client";
 // /phone — works on its own (phone-only) or paired with a screen (laptop or another phone).
-// Step 1: tap "Mulai" (permissions + voice unlock); the room code is optional.
-// Step 2: calibrate, exercise, get cues. All safety logic runs here (edge), see usePhoneSession.
+// Home: who holds the phone, "Mulai", pairing (QR or code), history, sensors on this phone.
+// Session: calibrate, exercise, get cues. All safety logic runs here (edge), see usePhoneSession.
+// History: every finished session is saved on this phone (works offline) and synced to a paired
+// screen; it can also be shared as a file. See SessionHistory and docs/NOTES.md.
 import {
+  Bluetooth,
+  CloudCheck,
+  Cpu,
   Crosshair,
   FlaskConical,
+  History,
+  Link2Off,
   MonitorSmartphone,
   OctagonX,
   Play,
   RotateCcw,
+  ScanLine,
   ShieldAlert,
   Square,
   VolumeX,
   Wrench,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PhasePill, RelayPill, SensorPill } from "@/components/ConnectionPills";
 import { LiveChart } from "@/components/LiveChart";
+import { QrScanner } from "@/components/QrScanner";
+import { AngleGauge } from "@/components/rehab/AngleGauge";
+import { CapabilityList } from "@/components/rehab/CapabilityList";
 import { EnvelopeCard } from "@/components/rehab/EnvelopeCard";
+import { extrasRows } from "@/components/rehab/extrasRows";
 import { RawSampleCard } from "@/components/rehab/RawSampleCard";
 import { RecordingsCard } from "@/components/rehab/RecordingsCard";
+import { SessionHistory } from "@/components/rehab/SessionHistory";
 import { Alert } from "@/components/ui/Alert";
 import { ExampleBadge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -29,53 +42,123 @@ import { CodeInput } from "@/components/ui/CodeInput";
 import { Disclosure } from "@/components/ui/Disclosure";
 import { Screen } from "@/components/ui/Screen";
 import { Stat } from "@/components/ui/Stat";
+import { Tabs } from "@/components/ui/Tabs";
 import { usePhoneSession } from "@/hooks/usePhoneSession";
 import { useRelay } from "@/hooks/useRelay";
+import { useSessions } from "@/hooks/useSessions";
 import { useWakeLock } from "@/hooks/useWakeLock";
 import { getDb } from "@/lib/db";
+import { type DeviceIdentity, getDeviceIdentity } from "@/lib/device";
 import { CUES } from "@/lib/rehab/cues";
 import { EXERCISES } from "@/lib/rehab/defaults";
-import type { ScreenPayloads } from "@/lib/rehab/messages";
+import type { PhoneInfo, ScreenPayloads } from "@/lib/rehab/messages";
 import type { SessionConfig } from "@/lib/rehab/session";
+import type { Reporter, SessionSummary } from "@/lib/rehab/summary";
+import { BleSource } from "@/lib/sensor/bleSource";
+import {
+  type Capability,
+  DeviceExtrasReader,
+  detectCapabilities,
+} from "@/lib/sensor/deviceExtras";
 import { PhoneSource } from "@/lib/sensor/phoneSource";
 import type { Recording } from "@/lib/sensor/recording";
 import { ReplaySource } from "@/lib/sensor/replaySource";
 import { syntheticFlexion } from "@/lib/sensor/synthetic";
 import { indonesianVoice, unlockSpeech, waitForVoices } from "@/lib/speech";
 
-type Problem = "insecure" | "denied" | "unsupported" | null;
+type Problem = "insecure" | "denied" | "unsupported" | "ble" | null;
 const CONFIG_KEY = "phone-config";
+const REPORTER_KEY = "reporter";
+/** Sessions per relay message: keeps each message well under ~200 KB. */
+const SYNC_CHUNK = 10;
 
 export function PhoneApp() {
   const [code, setCode] = useState("");
   const [fromQr, setFromQr] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [started, setStarted] = useState(false);
+  const [view, setView] = useState<"main" | "history">("main");
   const [problem, setProblem] = useState<Problem>(null);
   const [noVoice, setNoVoice] = useState(false);
   const [stoppedSick, setStoppedSick] = useState(false);
+  const [device, setDevice] = useState<DeviceIdentity | null>(null);
+  const [reporter, setReporter] = useState<Reporter>("patient");
+  const [caps, setCaps] = useState<Capability[]>([]);
+  const [lastSaved, setLastSaved] = useState<string | null>(null);
+  const sessions = useSessions();
   const paired = code.length === 4;
+  // From feature detection after mount (not during render: the server render has no window).
+  const canScan = caps.some((c) => c.id === "qr" && c.status === "yes");
+  const canBle = caps.some((c) => c.id === "bluetooth" && c.status === "yes");
 
+  // Pairing no longer waits for Mulai: a paired phone can sync its history before exercising.
   const relay = useRelay({
     role: "phone",
     roomId: code,
-    enabled: started && paired,
+    enabled: paired,
     onMessage: (m) => {
       if (m.type === "config")
         s.setConfig(m.payload as ScreenPayloads["config"]);
-      if (m.type === "joined")
-        relay.send("hello", {
-          userAgent: navigator.userAgent,
-          hasIndonesianVoice: !noVoice,
-        });
+      if (m.type === "sync-request") {
+        const { deviceId, have } = m.payload as ScreenPayloads["sync-request"];
+        if (deviceId !== device?.id) return;
+        const known = new Set(have);
+        sendSessions(sessions.filter((x) => !known.has(x.id) || !x.syncedAt));
+      }
+      if (m.type === "sessions-ack") {
+        const at = new Date().toISOString();
+        const { ids } = m.payload as ScreenPayloads["sessions-ack"];
+        getDb()
+          .sessions.where("id")
+          .anyOf(ids)
+          .modify({ syncedAt: at })
+          .catch(() => {});
+      }
     },
   });
-  const s = usePhoneSession(relay.send);
+  const linked = relay.state === "open" && relay.peers.screens > 0;
+  const { send } = relay;
+
+  const sendSessions = useCallback(
+    (list: SessionSummary[]) => {
+      for (let i = 0; i < list.length; i += SYNC_CHUNK)
+        send("sessions", {
+          sessions: list
+            .slice(i, i + SYNC_CHUNK)
+            .map(({ syncedAt: _, ...rest }) => rest),
+        });
+    },
+    [send],
+  );
+
+  // Every finished session is stored first, then sent: losing Wi-Fi never loses a session.
+  const saveSession = useCallback(
+    (x: SessionSummary) => {
+      const row = { ...x, syncedAt: undefined };
+      getDb()
+        .sessions.put(row)
+        .catch(() => {});
+      sendSessions([row]);
+    },
+    [sendSessions],
+  );
+
+  const s = usePhoneSession({
+    send,
+    reporter,
+    device,
+    onSessionEnd: (x) => {
+      saveSession(x);
+      setLastSaved(x.id);
+    },
+  });
   useWakeLock(started);
   // A connected screen owns the settings; otherwise the phone sets them itself.
-  const screenOwnsConfig = relay.state === "open" && relay.peers.screens > 0;
+  const screenOwnsConfig = linked;
 
   useEffect(() => {
     if (!window.isSecureContext) setProblem("insecure");
+    setCaps(detectCapabilities());
     // Opened from the QR on a screen: /phone?room=1234 pre-fills the code.
     // The user still taps Mulai, because iOS only grants motion access from a tap.
     const room = new URLSearchParams(location.search).get("room");
@@ -83,7 +166,26 @@ export function PhoneApp() {
       setCode(room);
       setFromQr(true);
     }
+    getDeviceIdentity()
+      .then(setDevice)
+      .catch(() => {});
+    getDb()
+      .settings.get(REPORTER_KEY)
+      .then((r) => r && setReporter(r.value as Reporter))
+      .catch(() => {});
   }, []);
+
+  // Introduce ourselves on every (re)join; the screen answers with config + a sync request.
+  useEffect(() => {
+    if (relay.state !== "open" || !device) return;
+    send<PhoneInfo>("hello", {
+      userAgent: navigator.userAgent,
+      hasIndonesianVoice: !noVoice,
+      deviceId: device.id,
+      deviceLabel: device.label,
+      capabilities: caps,
+    });
+  }, [relay.state, device, noVoice, caps, send]);
 
   // Phone-only mode remembers the last limits on this device.
   const { setConfig } = s;
@@ -101,15 +203,43 @@ export function PhoneApp() {
       .catch(() => {});
   };
 
+  const changeReporter = (r: Reporter) => {
+    setReporter(r);
+    getDb()
+      .settings.put({ key: REPORTER_KEY, value: r })
+      .catch(() => {});
+  };
+
+  const onScanned = useCallback((c: string) => {
+    setCode(c);
+    setScanning(false);
+  }, []);
+
   const begin = async () => {
-    // Order matters on iOS: both calls must happen inside this tap, before any other await.
+    // Order matters on iOS: every permission prompt must START inside this tap, before any
+    // other await. So the orientation prompt is started, not awaited, before the motion one.
     unlockSpeech();
+    const orient = DeviceExtrasReader.requestPermission();
     const perm = await PhoneSource.requestPermission();
+    await orient;
     if (perm !== "granted") return setProblem(perm);
     setStarted(true);
     await s.start(new PhoneSource());
     await waitForVoices();
     setNoVoice(!indonesianVoice());
+  };
+
+  const beginBle = async () => {
+    unlockSpeech();
+    try {
+      // requestDevice runs synchronously inside s.start, so it is still inside this tap.
+      const p = s.start(new BleSource());
+      setStarted(true);
+      await p;
+    } catch {
+      setStarted(false);
+      setProblem("ble");
+    }
   };
 
   const replay = async (r: Recording, loop = false) => {
@@ -130,9 +260,127 @@ export function PhoneApp() {
       true,
     );
 
+  const unsynced = sessions.filter((x) => !x.syncedAt).length;
+  const historyButton = (
+    <Button
+      variant="secondary"
+      size="xl"
+      icon={History}
+      onClick={() => setView("history")}
+    >
+      Riwayat latihan
+      <span className="text-base font-medium text-muted">
+        {sessions.length} sesi
+      </span>
+    </Button>
+  );
+
+  if (view === "history") {
+    return (
+      <Screen
+        title="Riwayat latihan"
+        subtitle="Tersimpan di HP ini. Bisa dilihat tanpa internet."
+        narrow
+        right={
+          <Button variant="secondary" onClick={() => setView("main")}>
+            Kembali
+          </Button>
+        }
+      >
+        {paired && (
+          <p className="flex items-center gap-2 text-sm text-muted">
+            <CloudCheck size={16} aria-hidden />
+            {linked
+              ? unsynced
+                ? `Mengirim ${unsynced} sesi ke laptop...`
+                : "Semua sesi sudah di laptop."
+              : "Laptop belum tersambung. Sesi dikirim saat tersambung."}
+          </p>
+        )}
+        <SessionHistory
+          sessions={sessions}
+          side="phone"
+          onChange={saveSession}
+          onDelete={(id) => {
+            getDb()
+              .sessions.delete(id)
+              .catch(() => {});
+          }}
+        />
+      </Screen>
+    );
+  }
+
+  const pairingCard = (
+    <Card title="Layar laptop / terapis (opsional)" icon={MonitorSmartphone}>
+      {linked ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-lg font-semibold">
+              Tersambung, kode {relay.roomId}
+            </div>
+            <div className="text-sm text-muted">
+              {unsynced
+                ? `${unsynced} sesi belum terkirim`
+                : "Riwayat sudah terkirim ke laptop"}
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={Link2Off}
+            onClick={() => {
+              setCode("");
+              setFromQr(false);
+            }}
+          >
+            Putuskan
+          </Button>
+        </div>
+      ) : scanning ? (
+        <QrScanner onCode={onScanned} onClose={() => setScanning(false)} />
+      ) : (
+        <div className="space-y-3">
+          {canScan && (
+            <Button
+              variant="secondary"
+              size="xl"
+              icon={ScanLine}
+              onClick={() => setScanning(true)}
+            >
+              Pindai QR di laptop
+            </Button>
+          )}
+          <CodeInput
+            label="Atau ketik kode ruang"
+            value={code}
+            onChange={setCode}
+          />
+          <p className="text-base text-muted">
+            Kosongkan untuk latihan hanya dengan HP ini.
+          </p>
+          {paired && relay.state !== "open" && (
+            <p className="text-sm text-muted">Menghubungkan...</p>
+          )}
+          {relay.error && <p className="text-sm text-danger">{relay.error}</p>}
+          {!canScan && (
+            <p className="text-sm text-muted">
+              iPhone: buka aplikasi Kamera dan arahkan ke QR di laptop.
+            </p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+
   if (!started) {
     return (
-      <Screen title="Rehat" subtitle="Latihan dengan HP sebagai sensor" narrow>
+      <Screen
+        title="Rehat"
+        subtitle="Latihan dengan HP sebagai sensor"
+        narrow
+        right={paired && <RelayPill state={relay.state} />}
+      >
         {problem === "insecure" && (
           <Alert tone="danger" title="Butuh HTTPS">
             Browser hanya memberi data gerak lewat HTTPS. Buka lewat alamat
@@ -151,33 +399,46 @@ export function PhoneApp() {
             Safari (iPhone).
           </Alert>
         )}
+        {problem === "ble" && (
+          <Alert tone="warning" title="Sensor Bluetooth tidak tersambung">
+            Perangkat tidak dipilih atau bukan sensor Rehat.
+          </Alert>
+        )}
+
+        <div>
+          <div className="mb-2 text-base font-medium">
+            Siapa yang memegang HP?
+          </div>
+          <Tabs<Reporter>
+            items={[
+              { id: "patient", label: "Pasien" },
+              { id: "caregiver", label: "Pendamping" },
+            ]}
+            value={reporter}
+            onChange={changeReporter}
+          />
+        </div>
 
         <Button size="xl" icon={Play} onClick={begin}>
-          Mulai
+          Mulai latihan
         </Button>
         <p className="text-base text-muted">
-          HP akan meminta izin sensor gerak. Layar tetap menyala selama latihan.
+          Meminta izin sensor gerak dan menyalakan suara. Layar tetap menyala
+          selama latihan.
         </p>
         {paired && (
           <p className="text-base font-medium">Terhubung ke layar terapis.</p>
         )}
 
-        <Disclosure
-          title="Hubungkan ke layar terapis"
-          icon={MonitorSmartphone}
-          defaultOpen={!fromQr && paired}
-        >
-          <CodeInput
-            label="Kode ruang dari layar"
-            value={code}
-            onChange={setCode}
-          />
-          <p className="text-base text-muted">
-            Kosongkan untuk latihan hanya dengan HP ini.
-          </p>
+        {(fromQr || paired || sessions.length === 0) && pairingCard}
+        {historyButton}
+        {!(fromQr || paired || sessions.length === 0) && pairingCard}
+
+        <Disclosure title="Sensor di HP ini" icon={Cpu}>
+          <CapabilityList items={caps} />
         </Disclosure>
 
-        <Disclosure title="Latihan percobaan" icon={FlaskConical}>
+        <Disclosure title="Coba tanpa sensor HP" icon={FlaskConical}>
           <Button
             variant="secondary"
             icon={FlaskConical}
@@ -186,6 +447,22 @@ export function PhoneApp() {
           >
             Data sintetis (bukan pengukuran)
           </Button>
+          {canBle && (
+            <div className="space-y-1">
+              <Button
+                variant="secondary"
+                icon={Bluetooth}
+                onClick={beginBle}
+                className="w-full"
+              >
+                Sensor Bluetooth (eksperimen)
+              </Button>
+              <p className="text-xs text-muted">
+                Untuk sensor ESP32 Tier 1 (belum ada firmware). Tidak bisa di
+                iPhone.
+              </p>
+            </div>
+          )}
           <RecordingsCard onReplay={(r) => replay(r)} />
         </Disclosure>
       </Screen>
@@ -205,13 +482,17 @@ export function PhoneApp() {
     s.stop();
     setStoppedSick(true);
   };
+  const saved = lastSaved ? sessions.find((x) => x.id === lastSaved) : null;
+  const ext = s.snap.extras;
   return (
     <Screen
       title={ex.name}
       subtitle={
         s.sourceKind === "replay"
           ? "Memutar rekaman, bukan sensor langsung"
-          : undefined
+          : s.sourceKind === "ble"
+            ? "Sensor Bluetooth (eksperimen)"
+            : undefined
       }
       narrow
       right={
@@ -241,15 +522,15 @@ export function PhoneApp() {
         <div className="mb-3">
           <PhasePill phase={phase} />
         </div>
-        <div className="flex items-end justify-between gap-3">
-          <Stat
-            label="Sudut"
-            value={live ? s.snap.angleDeg.toFixed(0) : "–"}
-            unit="°"
-            size="xl"
-            tone={breach ? "danger" : "default"}
+        <div className="grid grid-cols-[1fr_auto] items-end gap-3">
+          <AngleGauge
+            angleDeg={live ? s.snap.angleDeg : null}
+            limitDeg={s.config.envelope.maxAngleDeg}
+            over={!!breach || s.snap.angleDeg > s.config.envelope.maxAngleDeg}
           />
-          <Stat label="Repetisi" value={s.snap.reps} size="xl" />
+          <div className="pb-3">
+            <Stat label="Repetisi" value={s.snap.reps} size="xl" />
+          </div>
         </div>
         {live && (
           <p className="mt-3 text-lg font-medium tabular-nums">
@@ -284,6 +565,17 @@ export function PhoneApp() {
         </AnimatePresence>
       </div>
 
+      {phase === "idle" && saved && (
+        <Alert tone="success" title="Sesi tersimpan di HP ini">
+          {saved.reps} repetisi, sudut puncak {saved.maxAngleDeg.toFixed(0)}°.{" "}
+          {saved.syncedAt
+            ? "Sudah terkirim ke laptop."
+            : linked
+              ? "Mengirim ke laptop..."
+              : "Akan dikirim saat laptop tersambung."}
+        </Alert>
+      )}
+
       {phase === "idle" && (
         <>
           {stoppedSick && (
@@ -300,6 +592,7 @@ export function PhoneApp() {
           >
             Kalibrasi (diam 3 detik)
           </Button>
+          {historyButton}
         </>
       )}
       {phase === "calibrating" && (
@@ -320,7 +613,7 @@ export function PhoneApp() {
       {phase === "running" && (
         <>
           <Button size="xl" variant="secondary" icon={Square} onClick={s.stop}>
-            Selesai
+            Selesai dan simpan
           </Button>
           <Button size="xl" variant="danger" icon={OctagonX} onClick={stopSick}>
             Berhenti, saya sakit
@@ -343,11 +636,16 @@ export function PhoneApp() {
           >
             Lanjutkan
           </Button>
+          <Button size="xl" variant="secondary" icon={Square} onClick={s.stop}>
+            Selesai dan simpan
+          </Button>
           <Button size="xl" variant="danger" icon={OctagonX} onClick={stopSick}>
             Berhenti, saya sakit
           </Button>
         </>
       )}
+
+      {phase === "idle" && !linked && pairingCard}
 
       {screenOwnsConfig ? (
         <Card title="Batas dari layar terapis" icon={ShieldAlert}>
@@ -392,7 +690,10 @@ export function PhoneApp() {
           sample={s.latest}
           rate={s.rate}
           reportedIntervalMs={s.snap.reportedIntervalMs}
-          extra={[["Tanda gyro (dipelajari)", String(s.snap.gyroSign)]]}
+          extra={[
+            ["Tanda gyro (dipelajari)", String(s.snap.gyroSign)],
+            ...extrasRows(ext, s.snap.lostPackets),
+          ]}
         />
         <RecordingsCard
           recording={s.recording}

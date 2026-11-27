@@ -3,26 +3,61 @@
 // All safety logic runs here on the phone; the laptop only displays what we send.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChartPoint } from "@/components/LiveChart";
+import { newId } from "@/lib/device";
+import { vibrateCue } from "@/lib/haptics";
 import type { CalibrationResult } from "@/lib/rehab/angle";
 import { CUES } from "@/lib/rehab/cues";
 import { CUE_GAP_MS } from "@/lib/rehab/defaults";
 import type { BreachEvent } from "@/lib/rehab/envelope";
 import type { PhoneState, TelemetryPoint } from "@/lib/rehab/messages";
 import { RehabSession, type SessionConfig } from "@/lib/rehab/session";
+import {
+  type Reporter,
+  SessionRecorder,
+  type SessionSummary,
+} from "@/lib/rehab/summary";
+import { BleSource } from "@/lib/sensor/bleSource";
+import { DeviceExtrasReader, EMPTY_EXTRAS } from "@/lib/sensor/deviceExtras";
 import { PhoneSource } from "@/lib/sensor/phoneSource";
 import { RateMeter, type RateStats } from "@/lib/sensor/rateMeter";
 import type { Recording } from "@/lib/sensor/recording";
-import type { Sample, SensorSource, SensorStatus } from "@/lib/sensor/types";
+import type {
+  Sample,
+  SensorSource,
+  SensorStatus,
+  SourceKind,
+} from "@/lib/sensor/types";
 import { speak } from "@/lib/speech";
 
 type Send = <P>(type: string, payload: P) => void;
+
+export interface PhoneSessionOptions {
+  send: Send;
+  /** Who is holding the phone (AGENTS.md: every log stores reported_by). */
+  reporter: Reporter;
+  device: { id: string; label: string } | null;
+  /** Called once per finished session that has data. The page stores and syncs it. */
+  onSessionEnd: (s: SessionSummary) => void;
+}
+
+const kindOf = (src: SensorSource | null): SourceKind =>
+  src instanceof PhoneSource
+    ? "phone"
+    : src instanceof BleSource
+      ? "ble"
+      : "replay";
 
 const TELEMETRY_EVERY_MS = 100; // batch ~6 samples per message instead of 60 messages/s
 const BREACH_VISIBLE_MS = 4000;
 const CHART_KEEP_MS = 12_000;
 const STATE_EVERY_MS = 250; // UI + screen refresh 4x per second is enough to read numbers
 
-export function usePhoneSession(send: Send) {
+export function usePhoneSession({
+  send,
+  reporter,
+  device,
+  onSessionEnd,
+}: PhoneSessionOptions) {
   const [session] = useState(() => new RehabSession());
   const [snap, setSnap] = useState<PhoneState>(() => ({
     ...session.snapshot(),
@@ -32,6 +67,8 @@ export function usePhoneSession(send: Send) {
     source: "phone",
     config: session.config,
     latest: null,
+    extras: EMPTY_EXTRAS,
+    lostPackets: null,
   }));
   const [sensor, setSensor] = useState<SensorStatus | "off">("off");
   const [rate, setRate] = useState<RateStats>({
@@ -45,7 +82,7 @@ export function usePhoneSession(send: Send) {
     null,
   );
   const [recording, setRecording] = useState(false);
-  const [sourceKind, setSourceKind] = useState<"phone" | "replay">("phone");
+  const [sourceKind, setSourceKind] = useState<SourceKind>("phone");
   const [config, setConfigState] = useState<SessionConfig>(
     () => session.config,
   );
@@ -59,6 +96,13 @@ export function usePhoneSession(send: Send) {
   const lastCueAt = useRef(0);
   const latestRef = useRef<Sample | null>(null);
   const sensorRef = useRef<SensorStatus | "off">("off");
+  const extras = useRef<DeviceExtrasReader | null>(null);
+  const recorder = useRef<SessionRecorder | null>(null);
+  // Read inside sample callbacks without re-creating them.
+  const meta = useRef({ reporter, device, onSessionEnd });
+  useEffect(() => {
+    meta.current = { reporter, device, onSessionEnd };
+  });
 
   const buildState = useCallback(
     (): PhoneState => ({
@@ -69,9 +113,14 @@ export function usePhoneSession(send: Send) {
         sourceRef.current instanceof PhoneSource
           ? sourceRef.current.reportedIntervalMs
           : null,
-      source: sourceRef.current instanceof PhoneSource ? "phone" : "replay",
+      source: kindOf(sourceRef.current),
       config: session.config,
       latest: latestRef.current,
+      extras: extras.current?.snapshot() ?? EMPTY_EXTRAS,
+      lostPackets:
+        sourceRef.current instanceof BleSource
+          ? sourceRef.current.lostPackets
+          : null,
     }),
     [session],
   );
@@ -102,13 +151,37 @@ export function usePhoneSession(send: Send) {
       pts.push({ t: s.t, v: snapNow.angleDeg });
       while (pts.length && s.t - pts[0].t > CHART_KEEP_MS) pts.shift();
 
+      if (session.phase === "running")
+        recorder.current?.sample(
+          s.t,
+          snapNow.angleDeg,
+          snapNow.velDegS,
+          !!r.rep,
+        );
+
       if (r.breach) {
         setLastBreach(r.breach);
+        recorder.current?.breach(r.breach);
         send("breach", r.breach);
         if (s.t - lastCueAt.current > CUE_GAP_MS) {
           lastCueAt.current = s.t;
           speak(CUES[r.breach.kind]);
+          vibrateCue();
         }
+      }
+      if (r.calibration?.ok) {
+        // A new calibration starts a new session record.
+        const d = meta.current.device;
+        recorder.current = new SessionRecorder({
+          id: newId(),
+          deviceId: d?.id ?? "unknown",
+          deviceLabel: d?.label ?? "unknown",
+          exercise: session.config.exercise,
+          source: kindOf(sourceRef.current),
+          config: session.config,
+          batteryStart: extras.current?.snapshot().battery?.level ?? null,
+          reportedBy: meta.current.reporter,
+        });
       }
       if (r.calibration) {
         setCalibration(r.calibration);
@@ -130,8 +203,11 @@ export function usePhoneSession(send: Send) {
       setSensor(st);
       const before = session.phase;
       session.status(st);
-      if (st === "lost" && before === "running")
+      if (st === "lost" && before === "running") {
         speak("Sensor terputus. Latihan dijeda.");
+        vibrateCue();
+        recorder.current?.pause();
+      }
       publish();
     },
     [session, publish],
@@ -156,21 +232,44 @@ export function usePhoneSession(send: Send) {
     async (source: SensorSource) => {
       sourceRef.current?.stop();
       sourceRef.current = source;
-      setSourceKind(source instanceof PhoneSource ? "phone" : "replay");
+      setSourceKind(kindOf(source));
       meter.current.reset();
       source.onSample(onSample);
       source.onStatus(onStatus);
+      // Context readings (orientation, battery, ...) only make sense for the phone's own sensors.
+      extras.current?.stop();
+      extras.current = null;
+      if (source instanceof PhoneSource) {
+        extras.current = new DeviceExtrasReader();
+        extras.current.start();
+      }
       await source.start();
     },
     [onSample, onStatus],
   );
 
-  useEffect(() => () => sourceRef.current?.stop(), []);
+  useEffect(
+    () => () => {
+      sourceRef.current?.stop();
+      extras.current?.stop();
+    },
+    [],
+  );
+
+  const finishRecording = useCallback(() => {
+    const rec = recorder.current;
+    recorder.current = null;
+    if (!rec?.hasData) return;
+    meta.current.onSessionEnd(
+      rec.finish(extras.current?.snapshot().battery?.level ?? null),
+    );
+  }, []);
 
   // Stable identity: pages call this from effects (saved settings, config from the screen).
   const setConfig = useCallback(
     (c: SessionConfig) => {
       session.setConfig(c);
+      recorder.current?.setConfig(c);
       setConfigState(c);
       publish();
     },
@@ -197,6 +296,7 @@ export function usePhoneSession(send: Send) {
     sourceKind,
     start,
     calibrate: () => {
+      finishRecording(); // re-calibrating mid-session closes the previous record
       setCalibration(null);
       session.beginCalibration();
       publish();
@@ -207,6 +307,7 @@ export function usePhoneSession(send: Send) {
     },
     stop: () => {
       session.stop();
+      finishRecording();
       publish();
     },
     setConfig,

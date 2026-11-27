@@ -7,9 +7,17 @@ export interface Sample {
   gx: number; // rotationRate around device x (spec: beta), °/s
   gy: number; // around y (spec: gamma), °/s
   gz: number; // around z (spec: alpha), °/s
+  // Optional: acceleration WITHOUT gravity (DeviceMotion `acceleration`), m/s². Shown and
+  // recorded for analysis only; safety logic never uses it (and we never integrate it).
+  lx?: number;
+  ly?: number;
+  lz?: number;
 }
 
 export type SensorStatus = "ok" | "lost";
+
+/** Where samples come from. Only shown to people; the pipeline never branches on it. */
+export type SourceKind = "phone" | "replay" | "ble";
 
 /** Everything after this interface must not know where samples come from. */
 export interface SensorSource {
