@@ -1,5 +1,11 @@
 "use client";
-import { Radio, TriangleAlert } from "lucide-react";
+import {
+  BatteryMedium,
+  History,
+  Radio,
+  Smartphone,
+  TriangleAlert,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Card } from "./ui/Card";
 import { QrCode } from "./ui/QrCode";
@@ -60,32 +66,47 @@ export function PairingCard({
       ? `${base}${path}${path.includes("?") ? "&" : "?"}room=${code}`
       : null;
 
+  const https = base?.startsWith("https://") && usable;
+  const steps = [
+    "Sambungkan HP ke Wi-Fi yang sama dengan laptop ini.",
+    "Buka aplikasi Kamera di HP, arahkan ke QR, ketuk tautannya.",
+    ...(https
+      ? [
+          "Peringatan sertifikat (sekali saja): pilih Lanjutkan / Kunjungi situs.",
+        ]
+      : []),
+    "Di HP, tekan Mulai latihan. Riwayat di HP ikut terkirim ke sini.",
+  ];
+
   return (
     <Card title="Hubungkan HP">
-      <div className="flex flex-wrap items-center gap-5">
-        {url ? (
-          <QrCode value={url} label={`QR untuk membuka ${url}`} />
-        ) : (
-          <div className="size-44 rounded-lg bg-surface-2" />
-        )}
-        <div className="min-w-0 flex-1 space-y-2">
-          <p className="text-base">
-            Pindai QR dengan kamera HP (Wi-Fi yang sama), lalu tekan Mulai.
-          </p>
-          <p className="text-sm text-muted">
-            Atau buka <span className="font-medium text-text">{path}</span> dan
-            ketik kode{" "}
-            <span className="font-semibold tracking-widest text-text">
+      <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start">
+        <div className="shrink-0 rounded-(--radius-card) border border-border p-3">
+          {url ? (
+            <QrCode value={url} size={232} label={`QR untuk membuka ${url}`} />
+          ) : (
+            <div className="size-58 rounded-lg bg-surface-2" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1 space-y-4">
+          <ol className="space-y-3">
+            {steps.map((t, i) => (
+              <li key={t} className="flex gap-3 text-base">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary-soft text-sm font-semibold text-primary-hover">
+                  {i + 1}
+                </span>
+                <span className="pt-0.5">{t}</span>
+              </li>
+            ))}
+          </ol>
+          <div className="rounded-(--radius-control) bg-surface-2 p-3 text-sm">
+            <span className="text-muted">Tanpa kamera? Buka </span>
+            <span className="font-medium">{path}</span>
+            <span className="text-muted"> di HP dan ketik kode </span>
+            <span className="text-xl font-semibold tracking-[0.3em] tabular-nums">
               {code ?? "····"}
             </span>
-            .
-          </p>
-          {base?.startsWith("https://") && usable && (
-            <p className="text-sm text-muted">
-              Pertama kali, HP akan memperingatkan sertifikat. Pilih Lanjutkan /
-              Kunjungi situs ini.
-            </p>
-          )}
+          </div>
           {!usable && (
             <p className="flex items-start gap-1.5 text-sm text-warning">
               <TriangleAlert
@@ -101,5 +122,46 @@ export function PairingCard({
         </div>
       </div>
     </Card>
+  );
+}
+
+/** Replaces the pairing panel once a phone is in the room: which phone, is data flowing. */
+export function PhoneCard({
+  label,
+  hz,
+  battery,
+  sessions,
+  stale,
+}: {
+  label: string;
+  hz: number | null;
+  battery: { level: number; charging: boolean } | null;
+  sessions: number;
+  stale: boolean;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-(--radius-card) bg-surface px-4 py-3 shadow-(--shadow-card)">
+      <span className="flex items-center gap-2 font-semibold">
+        <Smartphone size={20} className="text-primary" aria-hidden />
+        {label}
+      </span>
+      <span className="text-sm text-muted tabular-nums">
+        {stale
+          ? "data terhenti"
+          : hz
+            ? `${hz.toFixed(0)} Hz`
+            : "sensor belum mulai"}
+      </span>
+      {battery && (
+        <span className="flex items-center gap-1 text-sm text-muted tabular-nums">
+          <BatteryMedium size={16} aria-hidden />
+          {Math.round(battery.level * 100)}%{battery.charging && " (mengisi)"}
+        </span>
+      )}
+      <span className="flex items-center gap-1 text-sm text-muted">
+        <History size={16} aria-hidden />
+        {sessions} sesi dari HP ini di laptop
+      </span>
+    </div>
   );
 }

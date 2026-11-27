@@ -52,6 +52,7 @@ export class PhoneSource extends BaseSource {
       return;
     }
     this.reportedIntervalMs = e.interval;
+    const lin = e.acceleration; // null on some devices (no fused linear acceleration)
     this.emit({
       t: e.timeStamp || performance.now(),
       ax: a.x,
@@ -61,6 +62,9 @@ export class PhoneSource extends BaseSource {
       gx: r.beta,
       gy: r.gamma,
       gz: r.alpha,
+      ...(lin?.x != null && lin.y != null && lin.z != null
+        ? { lx: lin.x, ly: lin.y, lz: lin.z }
+        : {}),
     });
   };
 }

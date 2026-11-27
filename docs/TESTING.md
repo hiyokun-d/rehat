@@ -43,6 +43,20 @@ Healthy teammates only. Results say nothing about stroke patients.
 Model · OS/browser · Hz · event.interval · learned gyro sign · Indonesian voice yes/no ·
 wake lock works yes/no · validation numbers.
 
+## History + transfer (2026-11-27)
+- [ ] Phone only, no Wi-Fi to the laptop: calibrate, 5 reps, "Selesai dan simpan". **Pass:** green
+      "Sesi tersimpan", Riwayat shows it with 5 reps and a chart; icon "belum terkirim".
+- [ ] Then pair (QR or code) without tapping Mulai. **Pass:** laptop tab Riwayat shows the session
+      within a few seconds; phone icon turns to "terkirim".
+- [ ] Edit difficulty/note on the phone while paired. **Pass:** laptop shows the change; the
+      therapist note written on the laptop is still there.
+- [ ] Bagikan on the phone -> send to yourself on WhatsApp -> laptop Impor. **Pass:** same session,
+      no duplicate.
+- [ ] Android: "Pindai QR di laptop" scans and connects. iPhone: button hidden, Camera app works.
+- [ ] Android: breach -> phone vibrates + voice. iPhone: voice only.
+- [ ] Laptop "Data mentah": three x/y/z charts move; "Sensor yang tersedia di HP" filled in.
+      **Record** the capability list per phone in docs/SENSORS.md.
+
 ## M3-M5 — Mode 2 (experimental)
 Prep on the laptop once: `bun run assets` (copies MediaPipe wasm, downloads the hand model).
 Phone: `https://<LAN IP>:3443/gesture`, tap Mulai, allow camera + motion.

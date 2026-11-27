@@ -31,3 +31,14 @@ export function makeMsg<T extends string, P>(
 ): Msg<T, P> {
   return { type, roomId, t: Date.now(), payload };
 }
+
+/** Room code from a scanned value: our pairing URL (?room=1234) or 4 bare digits. */
+export function roomFromQr(raw: string): string | null {
+  if (/^\d{4}$/.test(raw.trim())) return raw.trim();
+  try {
+    const room = new URL(raw).searchParams.get("room");
+    return room && ROOM_CODE.test(room) ? room : null;
+  } catch {
+    return null;
+  }
+}

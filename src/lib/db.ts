@@ -4,6 +4,7 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { CustomSign } from "./asl/customSigns";
 import type { Template } from "./gesture/classifier";
+import type { SessionSummary } from "./rehab/summary";
 import type { Recording } from "./sensor/recording";
 
 export interface RecordingRow extends Recording {
@@ -47,6 +48,7 @@ type RehatDb = Dexie & {
   settings: EntityTable<SettingRow, "key">;
   recordings: EntityTable<RecordingRow, "id">;
   validations: EntityTable<ValidationRow, "id">;
+  sessions: EntityTable<SessionSummary, "id">;
 };
 
 let db: RehatDb | null = null;
@@ -65,6 +67,8 @@ export function getDb(): RehatDb {
       gestureTests: "++id, runId",
     });
     db.version(4).stores({ aslCustom: "++id, key" }); // user-recorded ASL words
+    // Session summaries: on the phone its own, on the laptop the ones phones sent it.
+    db.version(5).stores({ sessions: "id, startedAt, deviceId" });
   }
   return db;
 }
