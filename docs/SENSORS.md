@@ -3,7 +3,7 @@
 Question: what can a phone *browser* give Rehat, on Android Chrome and iPhone Safari?
 Labels: FACT (with source) / ASSUMPTION / RECOMMENDATION. In-app check: `/phone` ->
 "Sensor di HP ini" (feature detection on that exact phone, also shown on the laptop in
-"Data mentah"). Fill the per-phone table at the bottom from it.
+"Data Awal"). Fill the per-phone table at the bottom from it.
 
 | API | Android Chrome | iPhone Safari | What Rehat does with it |
 |---|---|---|---|

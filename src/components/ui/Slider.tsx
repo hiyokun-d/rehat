@@ -23,7 +23,7 @@ export function Slider({
 }: SliderProps) {
   return (
     <label className="block">
-      <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-sm">
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-base">
         <span className="font-medium">{label}</span>
         <span className="font-semibold tabular-nums">
           {value}

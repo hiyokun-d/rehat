@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Card } from "./ui/Card";
+import { Disclosure } from "./ui/Disclosure";
 import { QrCode } from "./ui/QrCode";
 
 /** Compact code for the header. */
@@ -16,7 +17,7 @@ export function RoomCodeDisplay({ code }: { code: string | null }) {
     <div className="flex items-center gap-3 rounded-(--radius-card) bg-surface px-4 py-2 shadow-(--shadow-card)">
       <Radio size={20} className="text-primary" aria-hidden />
       <div>
-        <div className="text-xs font-medium text-muted">
+        <div className="text-sm font-medium text-muted">
           Kode ruang (ketik di HP)
         </div>
         <div
@@ -38,9 +39,11 @@ export function RoomCodeDisplay({ code }: { code: string | null }) {
 export function PairingCard({
   code,
   path = "/phone",
+  minimizable = false,
 }: {
   code: string | null;
   path?: string;
+  minimizable?: boolean;
 }) {
   const [base, setBase] = useState<string | null>(null);
   const [usable, setUsable] = useState(true);
@@ -78,51 +81,54 @@ export function PairingCard({
     "Di HP, tekan Mulai latihan. Riwayat di HP ikut terkirim ke sini.",
   ];
 
-  return (
-    <Card title="Hubungkan HP">
-      <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start">
-        <div className="shrink-0 rounded-(--radius-card) border border-border p-3">
-          {url ? (
-            <QrCode value={url} size={232} label={`QR untuk membuka ${url}`} />
-          ) : (
-            <div className="size-58 rounded-lg bg-surface-2" />
-          )}
-        </div>
-        <div className="min-w-0 flex-1 space-y-4">
-          <ol className="space-y-3">
-            {steps.map((t, i) => (
-              <li key={t} className="flex gap-3 text-base">
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary-soft text-sm font-semibold text-primary-hover">
-                  {i + 1}
-                </span>
-                <span className="pt-0.5">{t}</span>
-              </li>
-            ))}
-          </ol>
-          <div className="rounded-(--radius-control) bg-surface-2 p-3 text-sm">
-            <span className="text-muted">Tanpa kamera? Buka </span>
-            <span className="font-medium">{path}</span>
-            <span className="text-muted"> di HP dan ketik kode </span>
-            <span className="text-xl font-semibold tracking-[0.3em] tabular-nums">
-              {code ?? "····"}
-            </span>
-          </div>
-          {!usable && (
-            <p className="flex items-start gap-1.5 text-sm text-warning">
-              <TriangleAlert
-                size={16}
-                className="mt-0.5 shrink-0"
-                aria-hidden
-              />
-              Belum ada alamat HTTPS untuk HP. Jalankan bun run cert lalu
-              restart server, atau pakai tunnel.
-            </p>
-          )}
-          {url && <p className="break-all text-xs text-muted">{url}</p>}
-        </div>
+  const content = (
+    <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start">
+      <div className="shrink-0 rounded-(--radius-card) border border-border p-3">
+        {url ? (
+          <QrCode value={url} size={232} label={`QR untuk membuka ${url}`} />
+        ) : (
+          <div className="size-58 rounded-lg bg-surface-2" />
+        )}
       </div>
-    </Card>
+      <div className="min-w-0 flex-1 space-y-4">
+        <ol className="space-y-3">
+          {steps.map((t, i) => (
+            <li key={t} className="flex gap-3 text-base">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary-soft text-sm font-semibold text-primary-hover">
+                {i + 1}
+              </span>
+              <span className="pt-0.5">{t}</span>
+            </li>
+          ))}
+        </ol>
+        <div className="rounded-(--radius-control) bg-surface-2 p-3 text-sm">
+          <span className="text-muted">Tanpa kamera? Buka </span>
+          <span className="font-medium">{path}</span>
+          <span className="text-muted"> di HP dan ketik kode </span>
+          <span className="text-xl font-semibold tracking-[0.3em] tabular-nums">
+            {code ?? "····"}
+          </span>
+        </div>
+        {!usable && (
+          <p className="flex items-start gap-1.5 text-sm text-warning">
+            <TriangleAlert size={16} className="mt-0.5 shrink-0" aria-hidden />
+            Belum ada alamat HTTPS untuk HP. Jalankan bun run cert lalu restart
+            server, atau pakai tunnel.
+          </p>
+        )}
+        {url && <p className="break-all text-xs text-muted">{url}</p>}
+      </div>
+    </div>
   );
+
+  if (minimizable)
+    return (
+      <Disclosure title="Hubungkan HP" defaultOpen>
+        {content}
+      </Disclosure>
+    );
+
+  return <Card title="Hubungkan HP">{content}</Card>;
 }
 
 /** Replaces the pairing panel once a phone is in the room: which phone, is data flowing. */

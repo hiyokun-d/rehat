@@ -14,16 +14,23 @@ export function Tabs<T extends string>({
   items,
   value,
   onChange,
+  stack,
 }: {
   items: TabItem<T>[];
   value: T;
   onChange: (v: T) => void;
+  stack?: boolean;
 }) {
   const layoutId = useId();
   return (
     <div
       role="tablist"
-      className="inline-flex gap-1 rounded-(--radius-control) bg-surface-2 p-1"
+      className={cn(
+        "gap-1 rounded-(--radius-control) bg-surface-2 p-1",
+        stack
+          ? "flex flex-col"
+          : "flex max-w-full overflow-x-auto sm:inline-flex",
+      )}
     >
       {items.map(({ id, label, icon: Icon }) => (
         <button
@@ -33,7 +40,10 @@ export function Tabs<T extends string>({
           aria-selected={value === id}
           onClick={() => onChange(id)}
           className={cn(
-            "relative flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-medium",
+            "relative flex items-center gap-1.5 rounded-lg px-3 text-base font-medium",
+            stack
+              ? "min-h-11 py-1.5 text-left"
+              : "h-10 shrink-0 whitespace-nowrap",
             value === id ? "text-text" : "text-muted hover:text-text",
           )}
         >

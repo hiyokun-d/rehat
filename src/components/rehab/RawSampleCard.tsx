@@ -39,12 +39,15 @@ export function RawSampleCard({
     ...(extra ?? []),
   ];
   return (
-    <Card title="Data mentah" icon={Activity}>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+    <Card title="Data Awal" icon={Activity}>
+      <dl className="space-y-1.5 text-base">
         {rows.map(([k, v]) => (
-          <div key={k} className="contents">
+          <div
+            key={k}
+            className="flex flex-wrap items-baseline justify-between gap-x-4"
+          >
             <dt className="text-muted">{k}</dt>
-            <dd className="text-right font-medium tabular-nums">{v}</dd>
+            <dd className="whitespace-nowrap font-medium tabular-nums">{v}</dd>
           </div>
         ))}
       </dl>

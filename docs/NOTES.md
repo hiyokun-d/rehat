@@ -73,7 +73,7 @@ Near θ = 0 the direction is undefined (sin θ ≈ 0), so below 3° we use tilt 
 **Gyro sign is learned, not hard-coded.** Browsers disagree on the sign of rotationRate. During
 the first clear movements (>20°/s, beyond 10°) we compare the gyro-predicted change with the
 accelerometer change; after 15 votes the sign is fixed. Until then the filter uses tilt only.
-The learned sign is shown in "Detail teknis" / "Data mentah" — record it per phone model.
+The learned sign is shown in "Detail teknis" / "Data Awal"; record it per phone model.
 Unit tests cover all four combinations of flipped gyro / flipped gravity.
 
 **Velocity** for the envelope = gyro component perpendicular to gravity (°/s), i.e. how fast the
@@ -377,7 +377,7 @@ QR library added), or type the code; iPhone users use the Camera app.
 
 **Sensors.** See `docs/SENSORS.md`. New: linear acceleration (`lx/ly/lz`, optional on `Sample`),
 orientation + compass, battery, screen orientation, magnetometer/light if exposed, vibration
-cue (L1, Android). Laptop "Data mentah": live x/y/z charts for accel, gyro, linear accel
+cue (L1, Android). Laptop "Data Awal": live x/y/z charts for accel, gyro, linear accel
 (series colors checked with a colorblind-safety validator; legends carry live values). None of
 the new readings touch the safety logic.
 

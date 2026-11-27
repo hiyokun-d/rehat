@@ -54,7 +54,7 @@ wake lock works yes/no · validation numbers.
       no duplicate.
 - [ ] Android: "Pindai QR di laptop" scans and connects. iPhone: button hidden, Camera app works.
 - [ ] Android: breach -> phone vibrates + voice. iPhone: voice only.
-- [ ] Laptop "Data mentah": three x/y/z charts move; "Sensor yang tersedia di HP" filled in.
+- [ ] Laptop "Data Awal": three x/y/z charts move; "Sensor yang tersedia di HP" filled in.
       **Record** the capability list per phone in docs/SENSORS.md.
 
 ## M3-M5 — Mode 2 (experimental)

@@ -6,6 +6,7 @@ import type { ChartPoint } from "@/components/LiveChart";
 import { newId } from "@/lib/device";
 import { vibrateCue } from "@/lib/haptics";
 import type { CalibrationResult } from "@/lib/rehab/angle";
+import { CUES } from "@/lib/rehab/cues";
 import { CUE_GAP_MS } from "@/lib/rehab/defaults";
 import type { BreachEvent } from "@/lib/rehab/envelope";
 import type { PhoneState, TelemetryPoint } from "@/lib/rehab/messages";
@@ -45,11 +46,6 @@ const kindOf = (src: SensorSource | null): SourceKind =>
     : src instanceof BleSource
       ? "ble"
       : "replay";
-
-const CUES: Record<BreachEvent["kind"], string> = {
-  angle: "Pelan-pelan, turunkan tangan.",
-  velocity: "Pelan-pelan, gerakkan lebih lambat.",
-};
 
 const TELEMETRY_EVERY_MS = 100; // batch ~6 samples per message instead of 60 messages/s
 const BREACH_VISIBLE_MS = 4000;

@@ -86,12 +86,12 @@ export function RecordingsCard({
       }
     >
       {recording && (
-        <p className="mb-2 text-sm font-medium text-danger">
+        <p className="mb-2 text-base font-medium text-danger">
           Merekam sampel...
         </p>
       )}
       {rows.length === 0 && (
-        <p className="text-sm text-muted">
+        <p className="text-base text-muted">
           Belum ada rekaman di perangkat ini.
         </p>
       )}
@@ -101,7 +101,7 @@ export function RecordingsCard({
             key={r.id}
             className="flex flex-wrap items-center justify-between gap-2 py-2"
           >
-            <div className="min-w-0 text-sm">
+            <div className="min-w-0 text-base">
               <div className="truncate font-medium">{r.name}</div>
               <div className="text-muted">{r.samples.length} sampel</div>
             </div>
@@ -145,12 +145,12 @@ export function RecordingsCard({
           </li>
         ))}
       </ul>
-      <label className="mt-3 block text-sm text-muted">
+      <label className="mt-3 block text-base text-muted">
         Impor file rekaman (.json)
         <input
           type="file"
           accept="application/json"
-          className="mt-1 block w-full text-sm"
+          className="mt-1 block w-full text-base file:mr-3 file:h-10 file:rounded-(--radius-control) file:border file:border-border file:bg-surface file:px-4 file:font-medium file:text-text"
           onChange={(e) => e.target.files?.[0] && importFile(e.target.files[0])}
         />
       </label>

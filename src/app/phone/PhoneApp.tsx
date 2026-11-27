@@ -13,6 +13,7 @@ import {
   History,
   Link2Off,
   MonitorSmartphone,
+  OctagonX,
   Play,
   RotateCcw,
   ScanLine,
@@ -48,6 +49,7 @@ import { useSessions } from "@/hooks/useSessions";
 import { useWakeLock } from "@/hooks/useWakeLock";
 import { getDb } from "@/lib/db";
 import { type DeviceIdentity, getDeviceIdentity } from "@/lib/device";
+import { CUES } from "@/lib/rehab/cues";
 import { EXERCISES } from "@/lib/rehab/defaults";
 import type { PhoneInfo, ScreenPayloads } from "@/lib/rehab/messages";
 import type { SessionConfig } from "@/lib/rehab/session";
@@ -78,6 +80,7 @@ export function PhoneApp() {
   const [view, setView] = useState<"main" | "history">("main");
   const [problem, setProblem] = useState<Problem>(null);
   const [noVoice, setNoVoice] = useState(false);
+  const [stoppedSick, setStoppedSick] = useState(false);
   const [device, setDevice] = useState<DeviceIdentity | null>(null);
   const [reporter, setReporter] = useState<Reporter>("patient");
   const [caps, setCaps] = useState<Capability[]>([]);
@@ -353,6 +356,9 @@ export function PhoneApp() {
             value={code}
             onChange={setCode}
           />
+          <p className="text-base text-muted">
+            Kosongkan untuk latihan hanya dengan HP ini.
+          </p>
           {paired && relay.state !== "open" && (
             <p className="text-sm text-muted">Menghubungkan...</p>
           )}
@@ -416,10 +422,13 @@ export function PhoneApp() {
         <Button size="xl" icon={Play} onClick={begin}>
           Mulai latihan
         </Button>
-        <p className="text-sm text-muted">
+        <p className="text-base text-muted">
           Meminta izin sensor gerak dan menyalakan suara. Layar tetap menyala
           selama latihan.
         </p>
+        {paired && (
+          <p className="text-base font-medium">Terhubung ke layar terapis.</p>
+        )}
 
         {(fromQr || paired || sessions.length === 0) && pairingCard}
         {historyButton}
@@ -464,9 +473,17 @@ export function PhoneApp() {
   const { phase } = s.snap;
   const live = phase === "running" || phase === "paused";
   const breach = s.lastBreach;
+  const limitLabel = screenOwnsConfig ? "Batas dari terapis" : "Batas";
+  const calibrate = () => {
+    setStoppedSick(false);
+    s.calibrate();
+  };
+  const stopSick = () => {
+    s.stop();
+    setStoppedSick(true);
+  };
   const saved = lastSaved ? sessions.find((x) => x.id === lastSaved) : null;
   const ext = s.snap.extras;
-
   return (
     <Screen
       title={ex.name}
@@ -502,11 +519,8 @@ export function PhoneApp() {
       )}
 
       <Card>
-        <div className="mb-1 flex items-center justify-between">
+        <div className="mb-3">
           <PhasePill phase={phase} />
-          <span className="text-sm text-muted tabular-nums">
-            {s.rate.hz.toFixed(0)} Hz
-          </span>
         </div>
         <div className="grid grid-cols-[1fr_auto] items-end gap-3">
           <AngleGauge
@@ -519,39 +533,37 @@ export function PhoneApp() {
           </div>
         </div>
         {live && (
-          <div className="mt-2">
-            <LiveChart
-              points={s.points}
-              limit={s.config.envelope.maxAngleDeg}
-              height={110}
-              label="Grafik sudut 10 detik terakhir"
-            />
-          </div>
+          <p className="mt-3 text-lg font-medium tabular-nums">
+            {limitLabel} {s.config.envelope.maxAngleDeg}°
+          </p>
         )}
       </Card>
 
-      <AnimatePresence>
-        {breach && (
-          <Alert
-            key={`b-${breach.t}`}
-            tone="danger"
-            big
-            title="Melewati batas yang diatur terapis"
-          >
-            {breach.kind === "angle" ? "Sudut" : "Kecepatan"}{" "}
-            {breach.value.toFixed(0)}
-            {breach.kind === "angle" ? "°" : "°/s"} (batas {breach.limit}).
-            Pelan-pelan.
-          </Alert>
-        )}
-        {s.calibration && !s.calibration.ok && phase === "idle" && (
-          <Alert key="calib-fail" tone="warning" title="Kalibrasi gagal">
-            {s.calibration.reason === "moved"
-              ? `Dalam 10 detik tidak ada 3 detik yang cukup tenang (goyang ${s.calibration.spreadDeg.toFixed(1)}°). Sandarkan lengan lalu ulangi.`
-              : "Data sensor terlalu sedikit. Ulangi."}
-          </Alert>
-        )}
-      </AnimatePresence>
+      <div className="sticky top-2 z-10 space-y-2 empty:hidden">
+        <AnimatePresence>
+          {breach && (
+            <Alert
+              key={`b-${breach.t}`}
+              tone="danger"
+              big
+              title={CUES[breach.kind]}
+            >
+              {breach.kind === "angle" ? "Sudut" : "Kecepatan"}{" "}
+              {breach.value.toFixed(0)}
+              {breach.kind === "angle" ? "°" : "°/s"} melewati batas{" "}
+              {breach.limit}
+              {breach.kind === "angle" ? "°" : "°/s"} yang diatur.
+            </Alert>
+          )}
+          {s.calibration && !s.calibration.ok && phase === "idle" && (
+            <Alert key="calib-fail" tone="warning" title="Kalibrasi gagal">
+              {s.calibration.reason === "moved"
+                ? `Dalam 10 detik tidak ada 3 detik yang cukup tenang (goyang ${s.calibration.spreadDeg.toFixed(1)}°). Sandarkan lengan lalu ulangi.`
+                : "Data sensor terlalu sedikit. Ulangi."}
+            </Alert>
+          )}
+        </AnimatePresence>
+      </div>
 
       {phase === "idle" && saved && (
         <Alert tone="success" title="Sesi tersimpan di HP ini">
@@ -566,11 +578,16 @@ export function PhoneApp() {
 
       {phase === "idle" && (
         <>
-          <p className="text-base">{ex.placement}</p>
+          {stoppedSick && (
+            <Alert tone="info" title="Latihan dihentikan">
+              Beri tahu pendamping atau terapis kamu.
+            </Alert>
+          )}
+          <p className="text-lg">{ex.placement}</p>
           <Button
             size="xl"
             icon={Crosshair}
-            onClick={s.calibrate}
+            onClick={calibrate}
             disabled={s.sensor !== "ok"}
           >
             Kalibrasi (diam 3 detik)
@@ -581,7 +598,7 @@ export function PhoneApp() {
       {phase === "calibrating" && (
         <div className="space-y-2" aria-live="polite">
           <p className="text-xl font-semibold">Tahan di posisi awal...</p>
-          <p className="text-sm text-muted">
+          <p className="text-base text-muted">
             Goyang sedikit tidak apa-apa. Bila lengan bergerak jelas, bar mulai
             lagi dari awal.
           </p>
@@ -594,16 +611,23 @@ export function PhoneApp() {
         </div>
       )}
       {phase === "running" && (
-        <Button size="xl" variant="secondary" icon={Square} onClick={s.stop}>
-          Selesai dan simpan
-        </Button>
+        <>
+          <Button size="xl" variant="secondary" icon={Square} onClick={s.stop}>
+            Selesai dan simpan
+          </Button>
+          <Button size="xl" variant="danger" icon={OctagonX} onClick={stopSick}>
+            Berhenti, saya sakit
+          </Button>
+        </>
       )}
       {phase === "paused" && (
         <>
-          <Alert tone="danger" big title="Sensor terputus, latihan dijeda">
-            Tidak terpantau berarti tidak aman. Pastikan layar menyala dan
-            halaman ini terbuka, lalu lanjutkan.
-          </Alert>
+          <div className="sticky top-2 z-10">
+            <Alert tone="danger" big title="Sensor terputus, latihan dijeda">
+              Tidak terpantau berarti tidak aman. Pastikan layar menyala dan
+              halaman ini terbuka, lalu lanjutkan.
+            </Alert>
+          </div>
           <Button
             size="xl"
             icon={RotateCcw}
@@ -614,6 +638,9 @@ export function PhoneApp() {
           </Button>
           <Button size="xl" variant="secondary" icon={Square} onClick={s.stop}>
             Selesai dan simpan
+          </Button>
+          <Button size="xl" variant="danger" icon={OctagonX} onClick={stopSick}>
+            Berhenti, saya sakit
           </Button>
         </>
       )}
@@ -632,16 +659,21 @@ export function PhoneApp() {
         </Card>
       ) : (
         phase !== "calibrating" && (
-          <Disclosure
-            title="Latihan & batas (isi sesuai arahan terapis)"
-            icon={ShieldAlert}
-          >
+          <Disclosure title="Atur latihan & batas" icon={ShieldAlert}>
             <EnvelopeCard config={s.config} onChange={changeConfig} />
           </Disclosure>
         )
       )}
 
       <Disclosure title="Detail teknis" icon={Wrench}>
+        {live && (
+          <LiveChart
+            points={s.points}
+            limit={s.config.envelope.maxAngleDeg}
+            height={120}
+            label="Grafik sudut 10 detik terakhir"
+          />
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Stat
             label="Sudut maks"
