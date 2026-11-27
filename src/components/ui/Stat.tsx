@@ -17,7 +17,7 @@ export function Stat({
 }: StatProps) {
   return (
     <div className="min-w-0">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted">
+      <div className="text-sm font-medium uppercase tracking-wide text-muted">
         {label}
       </div>
       <div
@@ -29,7 +29,14 @@ export function Stat({
       >
         {value}
         {unit && (
-          <span className="ml-1 text-base font-medium text-muted">{unit}</span>
+          <span
+            className={cn(
+              "ml-1 font-medium text-muted",
+              size === "xl" ? "text-3xl" : "text-lg",
+            )}
+          >
+            {unit}
+          </span>
         )}
       </div>
     </div>

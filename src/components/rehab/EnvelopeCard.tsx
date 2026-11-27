@@ -21,9 +21,10 @@ export function EnvelopeCard({
     onChange({ ...config, reps: { ...config.reps, ...patch } });
 
   return (
-    <Card title="Latihan & batas aman (diatur terapis)" icon={ShieldAlert}>
+    <Card title="Latihan & batas (diatur terapis)" icon={ShieldAlert}>
       <div className="space-y-4">
         <Tabs<ExerciseId>
+          stack
           items={(Object.keys(EXERCISES) as ExerciseId[]).map((id) => ({
             id,
             label: EXERCISES[id].name,
@@ -51,7 +52,7 @@ export function EnvelopeCard({
           example
         />
         <Slider
-          label="Debounce (harus bertahan selama)"
+          label="Harus lewat batas selama"
           unit="ms"
           min={0}
           max={2000}

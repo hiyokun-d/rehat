@@ -178,27 +178,29 @@ export function ScreenApp() {
         </>
       }
     >
-      <AnimatePresence>
-        {paused && (
-          <Alert
-            key="paused"
-            tone="danger"
-            big
-            title="Latihan dijeda: sensor tidak terpantau"
-          >
-            {noPhone
-              ? "HP terputus dari server."
-              : stale
-                ? "Data dari HP berhenti masuk (jaringan atau HP tidur)."
-                : "HP melaporkan sensor terputus."}
-          </Alert>
-        )}
-        {received && (
-          <Alert key="rec" tone="success" title="Rekaman diterima dari HP">
-            Disimpan sebagai {received} dan diunduh.
-          </Alert>
-        )}
-      </AnimatePresence>
+      <div className="sticky top-2 z-10 space-y-2 empty:hidden">
+        <AnimatePresence>
+          {paused && (
+            <Alert
+              key="paused"
+              tone="danger"
+              big
+              title="Latihan dijeda: sensor tidak terpantau"
+            >
+              {noPhone
+                ? "HP terputus dari server."
+                : stale
+                  ? "Data dari HP berhenti masuk (jaringan atau HP tidur)."
+                  : "HP melaporkan sensor terputus."}
+            </Alert>
+          )}
+          {received && (
+            <Alert key="rec" tone="success" title="Rekaman diterima dari HP">
+              Disimpan sebagai {received} dan diunduh.
+            </Alert>
+          )}
+        </AnimatePresence>
+      </div>
 
       {noPhone && relay.state === "open" && tab !== "asl" && (
         <PairingCard
@@ -223,14 +225,15 @@ export function ScreenApp() {
       {tab === "asl" && <AslApp embedded />}
 
       {tab === "live" && (
-        <div className="grid gap-4 lg:grid-cols-[1.6fr_1fr]">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
           <div className="space-y-4">
             <Card>
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-4">
                 <Stat
                   label="Sudut"
                   value={phone ? phone.angleDeg.toFixed(0) : "–"}
                   unit="°"
+                  size="xl"
                   tone={
                     lastBreach &&
                     phone &&
@@ -239,17 +242,7 @@ export function ScreenApp() {
                       : "default"
                   }
                 />
-                <Stat label="Repetisi" value={phone?.reps ?? "–"} />
-                <Stat
-                  label="Sudut maks"
-                  value={phone ? phone.maxAngleDeg.toFixed(0) : "–"}
-                  unit="°"
-                />
-                <Stat
-                  label="Laju sampel"
-                  value={phone ? phone.rate.hz.toFixed(0) : "–"}
-                  unit="Hz"
-                />
+                <Stat label="Repetisi" value={phone?.reps ?? "–"} size="xl" />
               </div>
             </Card>
             <Card title="Sudut, 10 detik terakhir" icon={Gauge}>
@@ -258,13 +251,13 @@ export function ScreenApp() {
                 limit={config.envelope.maxAngleDeg}
                 label="Grafik sudut 10 detik terakhir"
               />
-              <p className="mt-2 text-xs text-muted">
+              <p className="mt-2 text-sm text-muted">
                 Garis putus-putus merah = sudut maksimum yang diatur (contoh).
               </p>
             </Card>
             <Card title="Kejadian melewati batas">
               {breaches.length === 0 ? (
-                <p className="text-sm text-muted">Belum ada.</p>
+                <p className="text-base text-muted">Belum ada.</p>
               ) : (
                 <div className="space-y-2">
                   <AnimatePresence initial={false}>
@@ -310,7 +303,7 @@ export function ScreenApp() {
             pending={gStatus?.state === "signing"}
             size="xl"
           />
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Card title="Status HP">
               <div className="space-y-2">
                 {gStatus ? (
@@ -351,12 +344,13 @@ export function ScreenApp() {
       )}
 
       {tab === "raw" && (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <RawSampleCard
             sample={phone?.latest ?? null}
             rate={phone?.rate ?? { hz: 0, dtMedianMs: 0, dtMaxMs: 0 }}
             reportedIntervalMs={phone?.reportedIntervalMs ?? null}
             extra={[
+              ["Sudut maks", phone ? `${phone.maxAngleDeg.toFixed(0)}°` : "–"],
               [
                 "Sumber",
                 phone?.source === "replay" ? "Rekaman (replay)" : "Sensor HP",

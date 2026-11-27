@@ -67,7 +67,7 @@ export function Alert({
           {title}
         </div>
         {children && (
-          <div className={cn("mt-0.5", big ? "text-base" : "text-sm")}>
+          <div className={cn("mt-0.5", big ? "text-lg" : "text-base")}>
             {children}
           </div>
         )}

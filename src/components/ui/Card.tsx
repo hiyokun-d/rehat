@@ -25,7 +25,7 @@ export function Card({
     >
       {(title || actions) && (
         <header className="mb-3 flex items-center justify-between gap-2">
-          <h2 className="flex items-center gap-2 text-sm font-semibold text-muted">
+          <h2 className="flex items-center gap-2 text-base font-semibold text-muted">
             {Icon && <Icon size={16} aria-hidden />}
             {title}
           </h2>

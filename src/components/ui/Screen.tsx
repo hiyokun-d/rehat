@@ -18,13 +18,13 @@ export function Screen({
     <div
       className={cn(
         "mx-auto w-full flex-1 px-4 py-5",
-        narrow ? "max-w-md" : "max-w-6xl",
+        narrow ? "max-w-md text-lg" : "max-w-6xl",
       )}
     >
       <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">{title}</h1>
-          {subtitle && <p className="text-sm text-muted">{subtitle}</p>}
+          {subtitle && <p className="text-base text-muted">{subtitle}</p>}
         </div>
         {right && (
           <div className="flex flex-wrap items-center gap-2">{right}</div>

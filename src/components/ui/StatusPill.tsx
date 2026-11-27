@@ -43,7 +43,7 @@ export function StatusPill({
       initial={{ opacity: 0.4 }}
       animate={{ opacity: 1 }}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium",
+        "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-base font-medium",
         t.cls,
       )}
     >

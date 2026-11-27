@@ -69,11 +69,11 @@ export function LiveChart({
         (lim ?? 0) + 20,
         ...visible.map((p) => p.v + 10),
       );
-      const pad = 32;
+      const pad = 40;
       const x = (t: number) => pad + ((t - tStart) / windowMs) * (w - pad - 8);
       const y = (v: number) => h - 20 - (v / top) * (h - 30);
 
-      ctx.font = "11px var(--font-poppins), sans-serif";
+      ctx.font = "13px var(--font-poppins), sans-serif";
       ctx.fillStyle = colors.text;
       ctx.strokeStyle = colors.grid;
       ctx.lineWidth = 1;

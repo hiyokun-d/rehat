@@ -10,7 +10,7 @@ export function RoomCodeDisplay({ code }: { code: string | null }) {
     <div className="flex items-center gap-3 rounded-(--radius-card) bg-surface px-4 py-2 shadow-(--shadow-card)">
       <Radio size={20} className="text-primary" aria-hidden />
       <div>
-        <div className="text-xs font-medium text-muted">
+        <div className="text-sm font-medium text-muted">
           Kode ruang (ketik di HP)
         </div>
         <div
@@ -68,11 +68,11 @@ export function PairingCard({
         ) : (
           <div className="size-44 rounded-lg bg-surface-2" />
         )}
-        <div className="min-w-0 flex-1 space-y-2">
+        <div className="min-w-56 flex-1 space-y-2">
           <p className="text-base">
             Pindai QR dengan kamera HP (Wi-Fi yang sama), lalu tekan Mulai.
           </p>
-          <p className="text-sm text-muted">
+          <p className="text-base text-muted">
             Atau buka <span className="font-medium text-text">{path}</span> dan
             ketik kode{" "}
             <span className="font-semibold tracking-widest text-text">
