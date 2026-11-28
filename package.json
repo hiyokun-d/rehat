@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node server.mts",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "NODE_ENV=production node server.mts",
     "test": "bun test",
     "lint": "biome check",
