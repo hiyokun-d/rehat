@@ -22,6 +22,7 @@ import {
   type ExerciseId,
 } from "./defaults";
 import {
+  type BreachAction,
   type BreachEvent,
   EnvelopeChecker,
   type SafetyEnvelope,
@@ -34,6 +35,9 @@ export interface SessionConfig {
   exercise: ExerciseId;
   envelope: SafetyEnvelope;
   reps: RepConfig;
+  /** Therapist's breach behavior. Absent in phone-only mode means cue only, no pause. */
+  onBreach?: BreachAction;
+  notifyCaregiver?: boolean;
 }
 
 export const DEFAULT_CONFIG: SessionConfig = {
@@ -111,6 +115,11 @@ export class RehabSession {
 
   resume(): void {
     if (this.phase === "paused") this.phase = "running";
+  }
+
+  /** The therapist's envelope asked for a pause; the app does not judge safety. */
+  pause(): void {
+    if (this.phase === "running") this.phase = "paused";
   }
 
   stop(): void {

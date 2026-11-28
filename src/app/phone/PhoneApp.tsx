@@ -47,10 +47,11 @@ import { usePhoneSession } from "@/hooks/usePhoneSession";
 import { useRelay } from "@/hooks/useRelay";
 import { useSessions } from "@/hooks/useSessions";
 import { useWakeLock } from "@/hooks/useWakeLock";
+import { applyBundle, claimedVersion } from "@/lib/api/bundleCache";
 import { getDb } from "@/lib/db";
 import { type DeviceIdentity, getDeviceIdentity } from "@/lib/device";
 import { CUES } from "@/lib/rehab/cues";
-import { EXERCISES } from "@/lib/rehab/defaults";
+import { EXERCISES, type ExerciseId } from "@/lib/rehab/defaults";
 import type { PhoneInfo, ScreenPayloads } from "@/lib/rehab/messages";
 import type { SessionConfig } from "@/lib/rehab/session";
 import type { Reporter, SessionSummary } from "@/lib/rehab/summary";
@@ -65,6 +66,9 @@ import type { Recording } from "@/lib/sensor/recording";
 import { ReplaySource } from "@/lib/sensor/replaySource";
 import { syntheticFlexion } from "@/lib/sensor/synthetic";
 import { indonesianVoice, unlockSpeech, waitForVoices } from "@/lib/speech";
+
+import { AccountCard } from "./AccountCard";
+import { useBackend } from "./useBackend";
 
 type Problem = "insecure" | "denied" | "unsupported" | "ble" | null;
 const CONFIG_KEY = "phone-config";
@@ -86,6 +90,8 @@ export function PhoneApp() {
   const [caps, setCaps] = useState<Capability[]>([]);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const sessions = useSessions();
+  const backend = useBackend();
+  const signedIn = backend.auth.status === "in";
   const paired = code.length === 4;
   // From feature detection after mount (not during render: the server render has no window).
   const canScan = caps.some((c) => c.id === "qr" && c.status === "yes");
@@ -95,7 +101,9 @@ export function PhoneApp() {
   const relay = useRelay({
     role: "phone",
     roomId: code,
-    enabled: paired,
+    // The relay needs a login (one-time ticket). Signed out, the phone works on its own.
+    enabled: paired && signedIn,
+    getTicket: backend.getTicket,
     onMessage: (m) => {
       if (m.type === "config")
         s.setConfig(m.payload as ScreenPayloads["config"]);
@@ -150,6 +158,7 @@ export function PhoneApp() {
     onSessionEnd: (x) => {
       saveSession(x);
       setLastSaved(x.id);
+      void backend.enqueueSession(x);
     },
   });
   useWakeLock(started);
@@ -188,13 +197,23 @@ export function PhoneApp() {
   }, [relay.state, device, noVoice, caps, send]);
 
   // Phone-only mode remembers the last limits on this device.
-  const { setConfig } = s;
+  const { setConfig, config: sessionConfig } = s;
+  const phase0 = s.snap.phase;
   useEffect(() => {
     getDb()
       .settings.get(CONFIG_KEY)
       .then((row) => row && setConfig(row.value as SessionConfig))
       .catch(() => {});
   }, [setConfig]);
+
+  // The therapist's versioned envelope wins over local limits, but only between sessions and not
+  // while a connected screen is setting the limits.
+  const { cache } = backend;
+  useEffect(() => {
+    if (linked || phase0 !== "idle") return;
+    const next = applyBundle(sessionConfig, cache);
+    if (next !== sessionConfig) setConfig(next);
+  }, [cache, linked, phase0, sessionConfig, setConfig]);
 
   const changeConfig = (c: SessionConfig) => {
     s.setConfig(c);
@@ -216,6 +235,7 @@ export function PhoneApp() {
   }, []);
 
   const begin = async () => {
+    void backend.refreshBundle(); // not awaited: iOS permission prompts must start inside this tap
     // Order matters on iOS: every permission prompt must START inside this tap, before any
     // other await. So the orientation prompt is started, not awaited, before the motion one.
     unlockSpeech();
@@ -360,7 +380,11 @@ export function PhoneApp() {
             Kosongkan untuk latihan hanya dengan HP ini.
           </p>
           {paired && relay.state !== "open" && (
-            <p className="text-sm text-muted">Menghubungkan...</p>
+            <p className="text-sm text-muted">
+              {signedIn
+                ? "Menghubungkan..."
+                : "Masuk dulu untuk tersambung ke layar terapis. Latihan di HP ini tetap jalan."}
+            </p>
           )}
           {relay.error && <p className="text-sm text-danger">{relay.error}</p>}
           {!canScan && (
@@ -426,9 +450,16 @@ export function PhoneApp() {
           Meminta izin sensor gerak dan menyalakan suara. Layar tetap menyala
           selama latihan.
         </p>
-        {paired && (
+        {paired && relay.state === "open" && (
           <p className="text-base font-medium">Terhubung ke layar terapis.</p>
         )}
+
+        <AccountCard
+          auth={backend.auth}
+          pending={backend.pending}
+          onSignIn={backend.signIn}
+          onSignOut={backend.signOut}
+        />
 
         {(fromQr || paired || sessions.length === 0) && pairingCard}
         {historyButton}
@@ -470,6 +501,10 @@ export function PhoneApp() {
   }
 
   const ex = EXERCISES[s.config.exercise];
+  const serverVersion = claimedVersion(s.config, cache);
+  const serverExercises = (Object.keys(EXERCISES) as ExerciseId[]).filter(
+    (id) => cache?.exercises[id]?.envelope,
+  );
   const { phase } = s.snap;
   const live = phase === "running" || phase === "paused";
   const breach = s.lastBreach;
@@ -657,9 +692,39 @@ export function PhoneApp() {
             <ExampleBadge />
           </div>
         </Card>
+      ) : serverVersion !== null ? (
+        <Card title="Batas dari terapis (akun)" icon={ShieldAlert}>
+          {phase === "idle" && serverExercises.length > 1 && (
+            <div className="mb-3">
+              <Tabs<ExerciseId>
+                stack
+                items={serverExercises.map((id) => ({
+                  id,
+                  label: EXERCISES[id].name,
+                }))}
+                value={s.config.exercise}
+                onChange={(exercise) => changeConfig({ ...s.config, exercise })}
+              />
+            </div>
+          )}
+          <p className="text-base tabular-nums">
+            Sudut maks {s.config.envelope.maxAngleDeg}° · kecepatan maks{" "}
+            {s.config.envelope.maxVelDegPerS}°/s · versi {serverVersion}
+          </p>
+          <p className="mt-1 text-sm text-muted">
+            Sesi dengan batas ini dikirim ke server.
+          </p>
+        </Card>
       ) : (
         phase !== "calibrating" && (
-          <Disclosure title="Atur latihan & batas" icon={ShieldAlert}>
+          <Disclosure
+            title={
+              signedIn
+                ? "Atur latihan & batas (mode lokal, tidak dikirim)"
+                : "Atur latihan & batas"
+            }
+            icon={ShieldAlert}
+          >
             <EnvelopeCard config={s.config} onChange={changeConfig} />
           </Disclosure>
         )

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { shouldPauseOnBreach } from "../src/lib/rehab/envelope";
 import { RehabSession } from "../src/lib/rehab/session";
 import {
   makeExport,
@@ -121,5 +122,33 @@ describe("pairing QR", () => {
     expect(roomFromQr("1234")).toBe("1234");
     expect(roomFromQr("https://example.com/?room=12")).toBeNull();
     expect(roomFromQr("hello")).toBeNull();
+  });
+});
+
+describe("therapist-set pause on breach (F4)", () => {
+  test("phone-only mode is cue only; only the therapist's value pauses", () => {
+    expect(shouldPauseOnBreach({})).toBe(false);
+    expect(shouldPauseOnBreach({ onBreach: "CUE_ONLY" })).toBe(false);
+    expect(shouldPauseOnBreach({ onBreach: "CUE_AND_PAUSE" })).toBe(true);
+  });
+
+  test("pause affects a running session only, and resume works", () => {
+    const s = new RehabSession();
+    s.pause();
+    expect(s.snapshot().phase).toBe("idle");
+    s.beginCalibration();
+    for (const sample of syntheticFlexion({
+      reps: 1,
+      peakDeg: 70,
+      stillMs: 3500,
+    })) {
+      s.sample(sample);
+      if (s.phase === "running") break;
+    }
+    expect(s.phase).toBe("running");
+    s.pause();
+    expect(s.snapshot().phase).toBe("paused");
+    s.resume();
+    expect(s.snapshot().phase).toBe("running");
   });
 });

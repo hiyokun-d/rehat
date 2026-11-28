@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { relayUrl } from "@/lib/api/wsTicket";
 import {
   type Msg,
   makeMsg,
@@ -23,9 +24,21 @@ export interface RelayOptions {
   roomId: string | null;
   enabled: boolean;
   onMessage: (m: Msg) => void;
+  /**
+   * Optional one-time ticket per connect (server.mts S1). Resolve a string to connect with it,
+   * null to give up (not allowed: no retry), or throw for a temporary failure (retry with backoff).
+   * Omit to connect without a ticket.
+   */
+  getTicket?: () => Promise<string | null>;
 }
 
-export function useRelay({ role, roomId, enabled, onMessage }: RelayOptions) {
+export function useRelay({
+  role,
+  roomId,
+  enabled,
+  onMessage,
+  getTicket,
+}: RelayOptions) {
   const [state, setState] = useState<RelayState>("off");
   const [joinedRoom, setJoinedRoom] = useState<string | null>(null);
   const [peers, setPeers] = useState({ phones: 0, screens: 0 });
@@ -48,6 +61,12 @@ export function useRelay({ role, roomId, enabled, onMessage }: RelayOptions) {
     onMessage(m);
   });
 
+  // undefined = this caller uses no tickets.
+  const ticketFor = useEffectEvent(
+    async (): Promise<string | null | undefined> =>
+      getTicket ? await getTicket() : undefined,
+  );
+
   useEffect(() => {
     if (!enabled) {
       setState("off");
@@ -58,10 +77,30 @@ export function useRelay({ role, roomId, enabled, onMessage }: RelayOptions) {
     let retry = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
-    const connect = () => {
+    const later = () => {
+      setState("closed");
+      // Backoff 0.5 s, 1 s, 2 s ... capped at 5 s (tuned by feel, not critical).
+      timer = setTimeout(connect, Math.min(5000, 500 * 2 ** retry++));
+    };
+
+    const connect = async () => {
       setState("connecting");
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+      let ticket: string | null | undefined;
+      try {
+        ticket = await ticketFor();
+      } catch {
+        if (!stopped) later();
+        return;
+      }
+      if (stopped) return;
+      if (ticket === null) {
+        // Not allowed to use the relay (e.g. signed out): the phone keeps working on its own.
+        setError("Masuk dulu untuk tersambung ke layar terapis.");
+        return setState("error");
+      }
+      const ws = new WebSocket(
+        relayUrl(location.protocol, location.host, ticket),
+      );
       wsRef.current = ws;
       let fatal = false;
       ws.onopen = () => {
@@ -92,9 +131,7 @@ export function useRelay({ role, roomId, enabled, onMessage }: RelayOptions) {
         wsRef.current = null;
         if (stopped) return;
         if (fatal) return setState("error");
-        setState("closed");
-        // Backoff 0.5 s, 1 s, 2 s ... capped at 5 s (tuned by feel, not critical).
-        timer = setTimeout(connect, Math.min(5000, 500 * 2 ** retry++));
+        later();
       };
     };
     connect();

@@ -1,0 +1,424 @@
+// Domain model from the dossier. Connection URLs live in prisma.config.ts (Prisma 7), not here.
+//
+// Rules this schema encodes (AGENTS.md):
+// - Limits are per patient and per exercise, set by a therapist (SafetyEnvelope on PlanExercise).
+//   No column has a clinical default; the app never decides what is acceptable movement.
+// - Every log stores who reported it. Adherence status is not a recovery indicator.
+// - A CareLink that is not ACTIVE gives the caregiver no access to patient data (enforce in
+//   the authorization policy and in row-level security).
+// - Patient data is soft-deleted (deletedAt). Every query on it must filter `deletedAt: null`.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  THERAPIST
+  PATIENT
+  CAREGIVER
+}
+
+enum CareLinkStatus {
+  PENDING
+  ACTIVE
+  REVOKED
+}
+
+enum BreachAction {
+  CUE_ONLY
+  CUE_AND_PAUSE
+}
+
+enum Reporter {
+  PATIENT
+  CAREGIVER
+}
+
+/// Outcome of one scheduled exercise. Not a measure of recovery.
+enum LogStatus {
+  COMPLETED
+  CANNOT_DO
+  POSTPONED
+}
+
+enum BreachKind {
+  ANGLE
+  VELOCITY
+}
+
+enum AlertLevel {
+  L1
+  L2
+}
+
+enum AlertStatus {
+  PENDING
+  SENT
+  ACKNOWLEDGED
+  FALSE_ALARM
+}
+
+enum DevicePlatform {
+  ANDROID
+  IOS
+  WEB
+}
+
+/// One row per Supabase auth user. `id` equals auth.users.id; the FK to auth.users is added
+/// in the SQL migration because Prisma does not model Supabase's auth schema.
+model Profile {
+  id          String    @id @db.Uuid
+  role        Role
+  displayName String
+  /// Set on patients only.
+  therapistId String?   @db.Uuid
+  therapist   Profile?  @relation("TherapistPatients", fields: [therapistId], references: [id], onDelete: SetNull)
+  patients    Profile[] @relation("TherapistPatients")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  programsAsPatient   Program[]          @relation("PatientPrograms")
+  programsAsTherapist Program[]          @relation("TherapistPrograms")
+  sessions            RehabSession[]     @relation("PatientSessions")
+  reportedSessions    RehabSession[]     @relation("ReportedSessions")
+  linksAsPatient      CareLink[]         @relation("LinkPatient")
+  linksAsCaregiver    CareLink[]         @relation("LinkCaregiver")
+  linksConsented      CareLink[]         @relation("LinkConsentedBy")
+  emergencyContacts   EmergencyContact[]
+  alertsAsPatient     Alert[]            @relation("AlertPatient")
+  alertsAsCaregiver   Alert[]            @relation("AlertCaregiver")
+  envelopesAuthored   SafetyEnvelope[]
+  devices             Device[]
+  scheduledSessions   ScheduledSession[] @relation("PatientSchedule")
+  reviewsAsPatient    TherapistReview[]  @relation("PatientReviews")
+  reviewsAsTherapist  TherapistReview[]  @relation("TherapistReviews")
+
+  @@index([role])
+  @@index([therapistId])
+}
+
+/// Caregiver access to one patient: invite code, then caregiver sign-up, then consent.
+/// PENDING = no access. Only ACTIVE grants access; REVOKED ends it.
+model CareLink {
+  id         String         @id @default(uuid()) @db.Uuid
+  status     CareLinkStatus
+  /// SHA-256 of the single-use invite code. Set to null once the code is used.
+  tokenHash  String?        @unique
+  expiresAt  DateTime
+  createdAt  DateTime       @default(now())
+  /// Set when the caregiver enters the code.
+  acceptedAt DateTime?
+  /// Set when consent is given. Null while PENDING.
+  consentAt  DateTime?
+  revokedAt  DateTime?
+  deletedAt  DateTime?
+
+  patientId     String   @db.Uuid
+  patient       Profile  @relation("LinkPatient", fields: [patientId], references: [id], onDelete: Cascade)
+  /// Null until a caregiver uses the code.
+  caregiverId   String?  @db.Uuid
+  caregiver     Profile? @relation("LinkCaregiver", fields: [caregiverId], references: [id], onDelete: Cascade)
+  /// Who gave consent: the patient, or the therapist when the patient cannot.
+  consentedById String?  @db.Uuid
+  consentedBy   Profile? @relation("LinkConsentedBy", fields: [consentedById], references: [id], onDelete: SetNull)
+
+  @@index([patientId, status])
+  @@index([caregiverId, status])
+  @@index([consentedById])
+  @@index([expiresAt])
+}
+
+/// Level 0 contact: a name and a WhatsApp number, no account.
+model EmergencyContact {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  /// E.164, e.g. +628123456789. Validate at the API boundary.
+  phoneE164 String
+  /// Null = no consent recorded, so this contact must not be messaged.
+  consentAt DateTime?
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  patientId String  @db.Uuid
+  patient   Profile @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+}
+
+/// Exercise catalog. Shared by all patients; holds no limits.
+model Exercise {
+  id          String  @id @default(uuid()) @db.Uuid
+  /// Stable key used by the phone app, e.g. "shoulder-flexion".
+  slug        String  @unique
+  name        String
+  description String?
+
+  planExercises PlanExercise[]
+}
+
+model Program {
+  id        String    @id @default(uuid()) @db.Uuid
+  title     String
+  active    Boolean
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  patientId   String  @db.Uuid
+  patient     Profile @relation("PatientPrograms", fields: [patientId], references: [id], onDelete: Cascade)
+  therapistId String  @db.Uuid
+  therapist   Profile @relation("TherapistPrograms", fields: [therapistId], references: [id], onDelete: Restrict)
+
+  planExercises PlanExercise[]
+
+  @@index([patientId, active])
+  @@index([therapistId])
+}
+// Prisma has no partial unique. For the migration worker (R1-M1): one active, non-deleted
+// program per patient. createProgram/updateProgram already deactivate the others in a transaction.
+//
+//   CREATE UNIQUE INDEX "Program_one_active_per_patient"
+//     ON "Program" ("patientId")
+//     WHERE "active" AND "deletedAt" IS NULL;
+
+/// A catalog exercise applied to one patient's program.
+model PlanExercise {
+  id        String    @id @default(uuid()) @db.Uuid
+  position  Int
+  createdAt DateTime  @default(now())
+  /// Bumped on every write, including soft delete. Feeds the monotonic bundle version and tombstones.
+  updatedAt DateTime  @default(now()) @updatedAt
+  deletedAt DateTime?
+
+  programId  String   @db.Uuid
+  program    Program  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  exerciseId String   @db.Uuid
+  exercise   Exercise @relation(fields: [exerciseId], references: [id], onDelete: Restrict)
+
+  envelopes         SafetyEnvelope[]
+  sessions          RehabSession[]
+  scheduledSessions ScheduledSession[]
+
+  @@index([programId, position])
+  @@index([exerciseId])
+}
+// Prisma has no partial unique. For the migration worker (R1-M1): one live row per exercise (slug)
+// per program. createPlanExercise already rejects a duplicate with 422.
+//
+//   CREATE UNIQUE INDEX "PlanExercise_one_exercise_per_program"
+//     ON "PlanExercise" ("programId", "exerciseId")
+//     WHERE "deletedAt" IS NULL;
+
+/// Limits set by the therapist. Append-only: a change inserts a new `version`; the current
+/// one is the highest. Sessions point at the version in force when they ran.
+model SafetyEnvelope {
+  id              String       @id @default(uuid()) @db.Uuid
+  version         Int
+  maxAngleDeg     Float
+  maxVelDegPerS   Float
+  debounceMs      Int
+  onBreach        BreachAction
+  notifyCaregiver Boolean
+  createdAt       DateTime     @default(now())
+
+  planExerciseId String       @db.Uuid
+  planExercise   PlanExercise @relation(fields: [planExerciseId], references: [id], onDelete: Cascade)
+  createdById    String       @db.Uuid
+  createdBy      Profile      @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  sessions RehabSession[]
+
+  @@unique([planExerciseId, version])
+  @@index([createdById])
+}
+
+/// The log of one scheduled exercise (ExerciseLog in the dossier).
+model RehabSession {
+  /// Generated on the phone so an offline upload can be retried without duplicates.
+  id              String    @id @default(uuid()) @db.Uuid
+  status          LogStatus
+  reportedBy      Reporter
+  startedAt       DateTime
+  endedAt         DateTime?
+  /// The SafetyEnvelope.version that applied when the session ran.
+  envelopeVersion Int
+  createdAt       DateTime  @default(now())
+  deletedAt       DateTime?
+
+  patientId      String         @db.Uuid
+  patient        Profile        @relation("PatientSessions", fields: [patientId], references: [id], onDelete: Cascade)
+  reporterId     String         @db.Uuid
+  /// Restrict, not Cascade: the log belongs to the patient, so deleting the caregiver's
+  /// profile must not delete it. A caregiver who has reported sessions can only be soft-deleted.
+  reporter       Profile        @relation("ReportedSessions", fields: [reporterId], references: [id], onDelete: Restrict)
+  planExerciseId String         @db.Uuid
+  planExercise   PlanExercise   @relation(fields: [planExerciseId], references: [id], onDelete: Restrict)
+  envelope       SafetyEnvelope @relation(fields: [planExerciseId, envelopeVersion], references: [planExerciseId, version], onDelete: Restrict)
+  /// Null for an unscheduled session.
+  scheduledSessionId String?          @db.Uuid
+  scheduledSession   ScheduledSession? @relation(fields: [scheduledSessionId], references: [id], onDelete: SetNull)
+
+  /// Absent when the exercise was not done (CANNOT_DO, POSTPONED).
+  attempt  AttemptSummary?
+  breaches BreachEvent[]
+  alerts   Alert[]
+  feedback Feedback?
+
+  @@index([patientId, startedAt(sort: Desc)])
+  @@index([planExerciseId, envelopeVersion])
+  @@index([reporterId])
+  @@index([scheduledSessionId])
+}
+
+/// One planned occurrence of an exercise on a given day, so a planned session can be
+/// told apart from a reported one.
+model ScheduledSession {
+  id           String    @id @default(uuid()) @db.Uuid
+  scheduledFor DateTime
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+
+  patientId      String       @db.Uuid
+  patient        Profile      @relation("PatientSchedule", fields: [patientId], references: [id], onDelete: Cascade)
+  planExerciseId String       @db.Uuid
+  planExercise   PlanExercise @relation(fields: [planExerciseId], references: [id], onDelete: Restrict)
+
+  sessions RehabSession[]
+
+  @@index([patientId, scheduledFor])
+  @@index([planExerciseId])
+}
+
+/// The patient's own account of how a session went, kept apart from the log.
+model Feedback {
+  id         String    @id @default(uuid()) @db.Uuid
+  difficulty Int?
+  note       String?
+  createdAt  DateTime  @default(now())
+  deletedAt  DateTime?
+
+  sessionId String       @unique @db.Uuid
+  session   RehabSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+/// A therapist's note on a patient.
+model TherapistReview {
+  id        String    @id @default(uuid()) @db.Uuid
+  note      String
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  patientId   String  @db.Uuid
+  patient     Profile @relation("PatientReviews", fields: [patientId], references: [id], onDelete: Cascade)
+  therapistId String  @db.Uuid
+  therapist   Profile @relation("TherapistReviews", fields: [therapistId], references: [id], onDelete: Restrict)
+
+  @@index([patientId, createdAt(sort: Desc)])
+  @@index([therapistId])
+}
+
+/// Session summary sent by the phone. No raw sensor samples (data minimization).
+model AttemptSummary {
+  id            String    @id @default(uuid()) @db.Uuid
+  reps          Int
+  activeMs      Int
+  maxAngleDeg   Float
+  maxVelDegPerS Float
+  pauses        Int
+  deletedAt     DateTime?
+
+  sessionId String       @unique @db.Uuid
+  session   RehabSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+/// A reading went past a limit the therapist set.
+model BreachEvent {
+  id         String     @id @default(uuid()) @db.Uuid
+  kind       BreachKind
+  value      Float
+  limit      Float
+  heldMs     Int
+  occurredAt DateTime
+  deletedAt  DateTime?
+
+  sessionId String       @db.Uuid
+  session   RehabSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  alerts    Alert[]
+
+  @@index([sessionId, occurredAt])
+}
+
+model Alert {
+  id             String      @id @default(uuid()) @db.Uuid
+  level          AlertLevel
+  status         AlertStatus
+  createdAt      DateTime    @default(now())
+  acknowledgedAt DateTime?
+  deletedAt      DateTime?
+
+  patientId     String       @db.Uuid
+  patient       Profile      @relation("AlertPatient", fields: [patientId], references: [id], onDelete: Cascade)
+  /// Recipient; null when the patient has no linked caregiver.
+  caregiverId   String?      @db.Uuid
+  caregiver     Profile?     @relation("AlertCaregiver", fields: [caregiverId], references: [id], onDelete: SetNull)
+  sessionId     String       @db.Uuid
+  session       RehabSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  breachEventId String?      @db.Uuid
+  breachEvent   BreachEvent? @relation(fields: [breachEventId], references: [id], onDelete: SetNull)
+
+  @@index([caregiverId, status])
+  @@index([patientId, createdAt(sort: Desc)])
+  @@index([sessionId])
+  @@index([breachEventId])
+}
+
+model Device {
+  id         String         @id @default(uuid()) @db.Uuid
+  platform   DevicePlatform
+  label      String?
+  createdAt  DateTime       @default(now())
+  lastSeenAt DateTime?
+
+  profileId String  @db.Uuid
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  pushTokens PushToken[]
+
+  @@index([profileId])
+}
+
+model PushToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  /// FCM registration token. Treat as a secret: never log it.
+  token     String   @unique
+  createdAt DateTime @default(now())
+
+  deviceId String @db.Uuid
+  device   Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+}
+
+/// Append-only. src/lib/prisma.ts rejects update/delete on this model. The SQL migration
+/// should also REVOKE UPDATE, DELETE on "AuditLog" from the application role.
+/// Deliberately no relations, so deleting a profile never cascades into the audit trail.
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  createdAt  DateTime @default(now())
+  actorId    String?  @db.Uuid
+  patientId  String?  @db.Uuid
+  action     String
+  entityType String
+  entityId   String?
+  /// No health values or secrets here; ids and field names only.
+  metadata   Json?
+
+  @@index([patientId, createdAt(sort: Desc)])
+  @@index([actorId, createdAt(sort: Desc)])
+}

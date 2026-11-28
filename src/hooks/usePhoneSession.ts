@@ -8,7 +8,7 @@ import { vibrateCue } from "@/lib/haptics";
 import type { CalibrationResult } from "@/lib/rehab/angle";
 import { CUES } from "@/lib/rehab/cues";
 import { CUE_GAP_MS } from "@/lib/rehab/defaults";
-import type { BreachEvent } from "@/lib/rehab/envelope";
+import { type BreachEvent, shouldPauseOnBreach } from "@/lib/rehab/envelope";
 import type { PhoneState, TelemetryPoint } from "@/lib/rehab/messages";
 import { RehabSession, type SessionConfig } from "@/lib/rehab/session";
 import {
@@ -163,10 +163,22 @@ export function usePhoneSession({
         setLastBreach(r.breach);
         recorder.current?.breach(r.breach);
         send("breach", r.breach);
+        // The pause comes from the therapist's envelope, never from the app's own judgment.
+        const pause =
+          shouldPauseOnBreach(session.config) && session.phase === "running";
         if (s.t - lastCueAt.current > CUE_GAP_MS) {
           lastCueAt.current = s.t;
-          speak(CUES[r.breach.kind]);
+          speak(
+            pause
+              ? `${CUES[r.breach.kind]} Latihan dijeda sesuai batas dari terapis.`
+              : CUES[r.breach.kind],
+          );
           vibrateCue();
+        }
+        if (pause) {
+          session.pause();
+          recorder.current?.pause();
+          publish();
         }
       }
       if (r.calibration?.ok) {
