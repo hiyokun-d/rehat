@@ -11,9 +11,9 @@ const poppins = Poppins({
 });
 
 export const metadata: Metadata = {
-  title: "Rehat — prototipe",
+  title: "Rehat",
   description:
-    "Prototipe kelayakan: HP sebagai sensor gerak, laptop sebagai layar.",
+    "Rehabilitasi stroke di rumah: HP sebagai sensor gerak, dipantau perawat.",
 };
 
 export const viewport: Viewport = {

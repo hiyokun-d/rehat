@@ -33,6 +33,7 @@ import {
   type SessionSummary,
 } from "@/lib/rehab/summary";
 import { mmss, PeakBars, TraceChart } from "./charts";
+import { QualityCard } from "./QualityCard";
 
 const REPORTER: Record<Reporter, string> = {
   patient: "Pasien",
@@ -368,6 +369,8 @@ function SessionDetail({
           />
         </Card>
       )}
+
+      <QualityCard reps={s.repList} />
 
       {s.breaches.length > 0 && (
         <Card

@@ -11,6 +11,7 @@ import type { SourceKind } from "../sensor/types";
 import type { ExerciseId } from "./defaults";
 import type { BreachEvent } from "./envelope";
 import type { SessionConfig } from "./session";
+import { repSparc } from "./sparc";
 
 /** 5 points/s is enough to see each rep's shape; 5 min ≈ 1500 points ≈ 20 KB. Tuned by eye. */
 export const TRACE_HZ = 5;
@@ -24,6 +25,8 @@ export interface RepRecord {
   atMs: number; // when the rep finished, ms since session start
   peakDeg: number;
   durMs: number;
+  /** Smoothness of this rep (sparc.ts). Descriptive only. Absent on older sessions. */
+  sparc?: number | null;
 }
 
 export interface SessionBreach extends BreachEvent {
@@ -91,6 +94,8 @@ export class SessionRecorder {
   private trace: [number, number][] = [];
   private repPeak = 0;
   private repStart: number | null = null;
+  /** Angular speed of the rep in progress, for its SPARC. Kept only until the rep ends. */
+  private repSpeed: [number, number][] = [];
 
   constructor(meta: RecorderMeta) {
     this.meta = meta;
@@ -114,15 +119,21 @@ export class SessionRecorder {
     if (this.repStart === null && angleDeg > down) {
       this.repStart = at;
       this.repPeak = 0;
+      this.repSpeed = [];
     }
-    if (this.repStart !== null) this.repPeak = Math.max(this.repPeak, angleDeg);
+    if (this.repStart !== null) {
+      this.repPeak = Math.max(this.repPeak, angleDeg);
+      this.repSpeed.push([at, velDegS]);
+    }
     if (rep) {
       this.repList.push({
         atMs: at,
         peakDeg: round1(this.repPeak),
         durMs: Math.round(at - (this.repStart ?? at)),
+        sparc: repSparc(this.repSpeed),
       });
       this.repStart = null;
+      this.repSpeed = [];
     }
 
     if (t - this.lastTraceT >= 1000 / TRACE_HZ) {

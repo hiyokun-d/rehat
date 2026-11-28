@@ -1,24 +1,10 @@
 "use client";
 // /screen — the laptop. Shows the room code, live data from the phone, and the therapist-side
 // settings. It never decides anything about safety: the phone does, the screen displays.
-import {
-  Activity,
-  Cpu,
-  Gauge,
-  Hand,
-  HandHelping,
-  History,
-  LineChart,
-  Ruler,
-} from "lucide-react";
+import { Activity, Cpu, Gauge, History, LineChart, Ruler } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import { AslApp } from "@/app/gesture/AslApp";
 import { PhasePill, RelayPill, SensorPill } from "@/components/ConnectionPills";
-import { CandidatesList } from "@/components/gesture/CandidatesList";
-import { DeskCamera, useDeskImu } from "@/components/gesture/DeskCamera";
-import { GestureStatePill } from "@/components/gesture/GestureStatePill";
-import { SubtitleBar } from "@/components/gesture/SubtitleBar";
 import { type ChartPoint, LiveChart } from "@/components/LiveChart";
 import { LiveMultiChart, type SeriesPoint } from "@/components/LiveMultiChart";
 import {
@@ -41,15 +27,9 @@ import { Stat } from "@/components/ui/Stat";
 import { Tabs } from "@/components/ui/Tabs";
 import { useRelay } from "@/hooks/useRelay";
 import { useSessions } from "@/hooks/useSessions";
-import { useSubtitle } from "@/hooks/useSubtitle";
 import { createApiClient } from "@/lib/api/client";
 import { makeTicketProvider } from "@/lib/api/wsTicket";
 import { getDb } from "@/lib/db";
-import type {
-  GestureImuMsg,
-  GestureResultMsg,
-  GestureStatusMsg,
-} from "@/lib/gesture/messages";
 import type { BreachEvent } from "@/lib/rehab/envelope";
 import type {
   PhoneInfo,
@@ -65,7 +45,7 @@ import { liveRelayEnabled } from "./_lib/liveGate";
 import { LocalModeNotice } from "./LocalModeNotice";
 import { ServerHistory } from "./ServerHistory";
 
-type Tab = "live" | "history" | "validate" | "raw" | "gesture" | "asl";
+type Tab = "live" | "history" | "validate" | "raw";
 const ROOM_KEY = "rehat-room";
 /** No state message from a connected phone for this long = we are not seeing it any more. */
 const STALE_MS = 1500;
@@ -110,12 +90,6 @@ export function ScreenApp() {
   const [getTicket] = useState(() =>
     makeTicketProvider(createApiClient(), () => therapistRef.current),
   );
-  const [gStatus, setGStatus] = useState<GestureStatusMsg | null>(null);
-  const [gResult, setGResult] = useState<
-    (GestureResultMsg & { receivedAt: number }) | null
-  >(null);
-  const subtitle = useSubtitle();
-  const deskImu = useDeskImu();
   const points = useRef<ChartPoint[]>([]);
   const accel = useRef<SeriesPoint[]>([]);
   const gyro = useRef<SeriesPoint[]>([]);
@@ -191,18 +165,6 @@ export function ScreenApp() {
         case "breach":
           setBreaches((b) => [p as BreachEvent, ...b].slice(0, 8));
           break;
-        case "g-imu":
-          deskImu.push(p as GestureImuMsg);
-          break;
-        case "g-status":
-          setGStatus(p as GestureStatusMsg);
-          break;
-        case "g-result": {
-          const r = p as GestureResultMsg;
-          setGResult({ ...r, receivedAt: Date.now() });
-          if (r.word) subtitle.add(r.word);
-          break;
-        }
         case "recording": {
           const rec = p as PhonePayloads["recording"];
           const name = `rekaman-hp-${stamp()}`;
@@ -277,14 +239,10 @@ export function ScreenApp() {
         </AnimatePresence>
       </div>
 
-      {noPhone && relay.state === "open" && tab !== "asl" && (
-        <PairingCard
-          code={relay.roomId}
-          path={tab === "gesture" ? "/gesture" : "/phone"}
-          minimizable
-        />
+      {noPhone && relay.state === "open" && (
+        <PairingCard code={relay.roomId} path="/phone" minimizable />
       )}
-      {!noPhone && info && tab !== "asl" && tab !== "gesture" && (
+      {!noPhone && info && (
         <PhoneCard
           label={info.deviceLabel}
           hz={phone?.rate.hz ?? null}
@@ -300,15 +258,10 @@ export function ScreenApp() {
           { id: "history", label: "Riwayat", icon: History },
           { id: "validate", label: "Validasi", icon: Ruler },
           { id: "raw", label: "Data Awal", icon: Activity },
-          { id: "gesture", label: "Mode 2: Gestur", icon: Hand },
-          { id: "asl", label: "ASL siap pakai", icon: HandHelping },
         ]}
         value={tab}
         onChange={setTab}
       />
-
-      {/* Laptop camera + pretrained ASL, full width. Its own room/QR for a mirroring phone. */}
-      {tab === "asl" && <AslApp embedded />}
 
       {tab === "live" && therapist === false && <LocalModeNotice />}
 
@@ -403,60 +356,6 @@ export function ScreenApp() {
           exercise={config.exercise}
           device={info?.userAgent ?? "unknown"}
         />
-      )}
-
-      {tab === "gesture" && (
-        <div className="space-y-4">
-          <Alert
-            tone="warning"
-            title="Eksperimen, bukan penerjemah bahasa isyarat"
-          >
-            Kata berasal dari gerakan uji yang direkam tim sendiri, bukan
-            isyarat BISINDO.
-          </Alert>
-          <SubtitleBar
-            words={subtitle.words}
-            pending={gStatus?.state === "signing"}
-            size="xl"
-          />
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Card title="Status HP">
-              <div className="space-y-2">
-                {gStatus ? (
-                  <GestureStatePill state={gStatus.state} />
-                ) : (
-                  <p className="text-sm text-muted">
-                    Belum ada HP di /gesture.
-                  </p>
-                )}
-                {gStatus && (
-                  <p className="text-sm text-muted tabular-nums">
-                    {gStatus.fps} FPS ({gStatus.delegate ?? "-"}) ·{" "}
-                    {gStatus.phase}
-                  </p>
-                )}
-              </div>
-            </Card>
-            <Card title="Hasil terakhir (3 teratas, jarak DTW)">
-              {gResult && (
-                <p className="mb-2 text-sm">
-                  {gResult.word
-                    ? `"${gResult.word}"`
-                    : `Tidak dikenali (${gResult.reason})`}{" "}
-                  · {gResult.latencyMs.toFixed(0)} ms di HP
-                </p>
-              )}
-              <CandidatesList candidates={gResult?.candidates ?? []} />
-              <p className="mt-2 text-xs text-muted">
-                Latensi diukur di HP (akhir gerakan sampai hasil). Jeda jaringan
-                tidak diukur: jam HP dan laptop tidak sinkron.
-              </p>
-            </Card>
-          </div>
-          <Card title="Eksperimen: kamera laptop + posisi HP" icon={Hand}>
-            <DeskCamera gyro={deskImu.gyro} />
-          </Card>
-        </div>
       )}
 
       {tab === "raw" && (

@@ -317,6 +317,15 @@ export function usePhoneSession({
       session.resume();
       publish();
     },
+    /** Remote pause from the nurse's dashboard. Only ever pauses; resuming stays on the phone. */
+    pause: () => {
+      if (session.phase !== "running") return;
+      session.pause();
+      recorder.current?.pause();
+      speak("Latihan dijeda oleh perawat.");
+      vibrateCue();
+      publish();
+    },
     stop: () => {
       session.stop();
       finishRecording();

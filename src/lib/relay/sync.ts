@@ -86,6 +86,16 @@ export const sessionItemSchema = z
     breaches: z.array(breachSchema).max(MAX_BREACHES),
     difficulty: z.number().int().min(1).max(5).nullable().optional(),
     note: z.string().max(MAX_STR).nullable().optional(),
+    // Descriptive quality (src/lib/rehab/quality.ts). Optional so older phones still sync.
+    // Ranges are sanity bounds only: SPARC is <= 0, CV >= 0, trend in degrees.
+    quality: z
+      .strictObject({
+        sparc: z.number().finite().min(-100).max(0).nullable(),
+        cv: z.number().finite().min(0).max(100).nullable(),
+        trendDeg: z.number().finite().min(-360).max(360).nullable(),
+      })
+      .nullable()
+      .optional(),
   })
   .superRefine((item, ctx) => {
     if (Date.parse(item.startedAt) > MAX_TIME_MS) {
@@ -332,6 +342,9 @@ async function writeChildren(
       maxAngleDeg: item.maxAngleDeg,
       maxVelDegPerS: item.maxVelDegS,
       pauses: item.pauses,
+      sparcMedian: item.quality?.sparc ?? null,
+      peakCv: item.quality?.cv ?? null,
+      peakTrendDeg: item.quality?.trendDeg ?? null,
     },
   });
 

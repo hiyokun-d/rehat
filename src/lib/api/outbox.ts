@@ -12,6 +12,7 @@
 //
 // Breach events travel inside the session they belong to (the server has no separate breach
 // route), so a breach is queued when its session ends, not the moment it happens.
+import { sessionQuality } from "@/lib/rehab/quality";
 import type { SessionSummary } from "@/lib/rehab/summary";
 import { type ApiClient, ApiError, type SessionItem } from "./client";
 
@@ -83,6 +84,17 @@ export function toSyncItem(
     })),
     difficulty: s.difficulty ? DIFFICULTY[s.difficulty] : null,
     note: s.note ? s.note.slice(0, MAX_NOTE) : null,
+    quality: qualityOf(s),
+  };
+}
+
+function qualityOf(s: SessionSummary): SessionItem["quality"] {
+  const q = sessionQuality(s.repList ?? []);
+  if (q.smoothnessSparc === null && q.consistencyCv === null) return null;
+  return {
+    sparc: q.smoothnessSparc,
+    cv: q.consistencyCv,
+    trendDeg: q.peakTrendDeg,
   };
 }
 

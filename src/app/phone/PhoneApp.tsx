@@ -12,6 +12,7 @@ import {
   FlaskConical,
   History,
   Link2Off,
+  LogIn,
   MonitorSmartphone,
   OctagonX,
   Play,
@@ -23,8 +24,9 @@ import {
   Wrench,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PhasePill, RelayPill, SensorPill } from "@/components/ConnectionPills";
+import { StrokeWarning } from "@/components/care/StrokeWarning";
 import { LiveChart } from "@/components/LiveChart";
 import { QrScanner } from "@/components/QrScanner";
 import { AngleGauge } from "@/components/rehab/AngleGauge";
@@ -50,6 +52,8 @@ import { useWakeLock } from "@/hooks/useWakeLock";
 import { applyBundle, claimedVersion } from "@/lib/api/bundleCache";
 import { getDb } from "@/lib/db";
 import { type DeviceIdentity, getDeviceIdentity } from "@/lib/device";
+import type { Placement } from "@/lib/live/placement";
+import { isPlacement, placementLabel } from "@/lib/live/placement";
 import { CUES } from "@/lib/rehab/cues";
 import { EXERCISES, type ExerciseId } from "@/lib/rehab/defaults";
 import type { PhoneInfo, ScreenPayloads } from "@/lib/rehab/messages";
@@ -65,14 +69,22 @@ import { PhoneSource } from "@/lib/sensor/phoneSource";
 import type { Recording } from "@/lib/sensor/recording";
 import { ReplaySource } from "@/lib/sensor/replaySource";
 import { syntheticFlexion } from "@/lib/sensor/synthetic";
-import { indonesianVoice, unlockSpeech, waitForVoices } from "@/lib/speech";
-
+import {
+  indonesianVoice,
+  speak,
+  unlockSpeech,
+  waitForVoices,
+} from "@/lib/speech";
 import { AccountCard } from "./AccountCard";
+import { HelpButton, NurseMessageCard } from "./NurseContact";
+import { CodeSignIn, LinkSignIn, PlacementPicker } from "./PhoneSetup";
 import { useBackend } from "./useBackend";
+import { usePatientLive } from "./usePatientLive";
 
 type Problem = "insecure" | "denied" | "unsupported" | "ble" | null;
 const CONFIG_KEY = "phone-config";
 const REPORTER_KEY = "reporter";
+const PLACEMENT_KEY = "placement";
 /** Sessions per relay message: keeps each message well under ~200 KB. */
 const SYNC_CHUNK = 10;
 
@@ -89,6 +101,7 @@ export function PhoneApp() {
   const [reporter, setReporter] = useState<Reporter>("patient");
   const [caps, setCaps] = useState<Capability[]>([]);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
+  const [placement, setPlacement] = useState<Placement | null>(null);
   const sessions = useSessions();
   const backend = useBackend();
   const signedIn = backend.auth.status === "in";
@@ -127,6 +140,26 @@ export function PhoneApp() {
   const linked = relay.state === "open" && relay.peers.screens > 0;
   const { send } = relay;
 
+  const sessionRef = useRef<{ pause: () => void } | null>(null);
+  // Signed in as a patient: the phone also joins its own cloud room (patient:<id>) so the nurse
+  // dashboard sees it live, alongside any other phones on the same patient.
+  const patientLive = usePatientLive({
+    userId: backend.auth.status === "in" ? backend.auth.userId : null,
+    device,
+    placement,
+    onPause: () => sessionRef.current?.pause(),
+    onRefreshBundle: () => void backend.refreshBundle(true),
+  });
+  const liveSend = patientLive.send;
+  const sayNurse = useCallback((t: string) => speak(t), []);
+  const sendAll = useCallback(
+    <P,>(type: string, payload: P) => {
+      send(type, payload);
+      liveSend(type, payload);
+    },
+    [send, liveSend],
+  );
+
   const sendSessions = useCallback(
     (list: SessionSummary[]) => {
       for (let i = 0; i < list.length; i += SYNC_CHUNK)
@@ -152,7 +185,7 @@ export function PhoneApp() {
   );
 
   const s = usePhoneSession({
-    send,
+    send: sendAll,
     reporter,
     device,
     onSessionEnd: (x) => {
@@ -161,6 +194,7 @@ export function PhoneApp() {
       void backend.enqueueSession(x);
     },
   });
+  sessionRef.current = s;
   useWakeLock(started);
   // A connected screen owns the settings; otherwise the phone sets them itself.
   const screenOwnsConfig = linked;
@@ -182,19 +216,24 @@ export function PhoneApp() {
       .settings.get(REPORTER_KEY)
       .then((r) => r && setReporter(r.value as Reporter))
       .catch(() => {});
+    getDb()
+      .settings.get(PLACEMENT_KEY)
+      .then((r) => r && isPlacement(r.value) && setPlacement(r.value))
+      .catch(() => {});
   }, []);
 
   // Introduce ourselves on every (re)join; the screen answers with config + a sync request.
   useEffect(() => {
-    if (relay.state !== "open" || !device) return;
-    send<PhoneInfo>("hello", {
+    if ((relay.state !== "open" && patientLive.state !== "open") || !device)
+      return;
+    sendAll<PhoneInfo>("hello", {
       userAgent: navigator.userAgent,
       hasIndonesianVoice: !noVoice,
       deviceId: device.id,
       deviceLabel: device.label,
       capabilities: caps,
     });
-  }, [relay.state, device, noVoice, caps, send]);
+  }, [relay.state, patientLive.state, device, noVoice, caps, sendAll]);
 
   // Phone-only mode remembers the last limits on this device.
   const { setConfig, config: sessionConfig } = s;
@@ -219,6 +258,13 @@ export function PhoneApp() {
     s.setConfig(c);
     getDb()
       .settings.put({ key: CONFIG_KEY, value: c })
+      .catch(() => {});
+  };
+
+  const changePlacement = (p: Placement) => {
+    setPlacement(p);
+    getDb()
+      .settings.put({ key: PLACEMENT_KEY, value: p })
       .catch(() => {});
   };
 
@@ -429,6 +475,57 @@ export function PhoneApp() {
           </Alert>
         )}
 
+        <LinkSignIn signedIn={signedIn} />
+
+        {(backend.auth.status === "out" ||
+          (signedIn && patientLive.isPatient === false)) && (
+          <Card title="Masuk sebagai pasien" icon={LogIn}>
+            {signedIn && (
+              <p className="mb-2 text-base text-warning">
+                HP ini sedang masuk dengan akun yang bukan akun pasien. Kode di
+                bawah akan menggantinya.
+              </p>
+            )}
+            <p className="mb-3 text-base">
+              Pindai QR dari perawat dengan kamera HP, atau ketik kodenya di
+              sini. Tidak perlu email atau kata sandi.
+            </p>
+            <CodeSignIn signedIn={signedIn} />
+            <p className="mt-3 text-sm text-muted">
+              Belum punya kode? Latihan tetap bisa dicoba tanpa masuk, tapi
+              tidak terkirim ke perawat.
+            </p>
+          </Card>
+        )}
+
+        <NurseMessageCard
+          message={patientLive.message}
+          onClose={patientLive.clearMessage}
+          speak={sayNurse}
+        />
+
+        {patientLive.isPatient && (
+          <Card title="Tersambung ke perawat" icon={MonitorSmartphone}>
+            <p className="text-base">
+              {patientLive.state === "open"
+                ? patientLive.screens > 0
+                  ? "Perawat sedang memantau. Latihan terlihat langsung di dashboard."
+                  : "Siap. Perawat akan melihat latihan saat membuka dashboard."
+                : patientLive.state === "error"
+                  ? (patientLive.error ?? "Koneksi live gagal.")
+                  : "Menghubungkan..."}
+            </p>
+            <p className="mt-1 text-sm text-muted">
+              Tanpa internet latihan tetap jalan dan sesi dikirim nanti.
+            </p>
+            <div className="mt-3">
+              <HelpButton />
+            </div>
+          </Card>
+        )}
+
+        <PlacementPicker value={placement} onChange={changePlacement} />
+
         <div>
           <div className="mb-2 text-base font-medium">
             Siapa yang memegang HP?
@@ -451,19 +548,38 @@ export function PhoneApp() {
           selama latihan.
         </p>
         {paired && relay.state === "open" && (
-          <p className="text-base font-medium">Terhubung ke layar terapis.</p>
+          <p className="text-base font-medium">Terhubung ke layar lokal.</p>
         )}
 
-        <AccountCard
-          auth={backend.auth}
-          pending={backend.pending}
-          onSignIn={backend.signIn}
-          onSignOut={backend.signOut}
-        />
+        <StrokeWarning compact />
 
-        {(fromQr || paired || sessions.length === 0) && pairingCard}
         {historyButton}
-        {!(fromQr || paired || sessions.length === 0) && pairingCard}
+
+        {signedIn ? (
+          <AccountCard
+            auth={backend.auth}
+            pending={backend.pending}
+            onSignIn={backend.signIn}
+            onSignOut={backend.signOut}
+          />
+        ) : (
+          <Disclosure title="Masuk dengan email" icon={LogIn}>
+            <AccountCard
+              auth={backend.auth}
+              pending={backend.pending}
+              onSignIn={backend.signIn}
+              onSignOut={backend.signOut}
+            />
+          </Disclosure>
+        )}
+
+        <Disclosure
+          title="Layar lokal tanpa internet (kode ruang)"
+          icon={MonitorSmartphone}
+          defaultOpen={fromQr || paired}
+        >
+          {pairingCard}
+        </Disclosure>
 
         <Disclosure title="Sensor di HP ini" icon={Cpu}>
           <CapabilityList items={caps} />
@@ -523,11 +639,13 @@ export function PhoneApp() {
     <Screen
       title={ex.name}
       subtitle={
-        s.sourceKind === "replay"
-          ? "Memutar rekaman, bukan sensor langsung"
-          : s.sourceKind === "ble"
-            ? "Sensor Bluetooth (eksperimen)"
-            : undefined
+        placement && s.sourceKind === "phone"
+          ? `HP di ${placementLabel(placement)}`
+          : s.sourceKind === "replay"
+            ? "Memutar rekaman, bukan sensor langsung"
+            : s.sourceKind === "ble"
+              ? "Sensor Bluetooth (eksperimen)"
+              : undefined
       }
       narrow
       right={
@@ -680,7 +798,13 @@ export function PhoneApp() {
         </>
       )}
 
-      {phase === "idle" && !linked && pairingCard}
+      <NurseMessageCard
+        message={patientLive.message}
+        onClose={patientLive.clearMessage}
+        speak={sayNurse}
+      />
+      {patientLive.isPatient && phase !== "calibrating" && <HelpButton />}
+      {phase !== "calibrating" && <StrokeWarning compact />}
 
       {screenOwnsConfig ? (
         <Card title="Batas dari layar terapis" icon={ShieldAlert}>

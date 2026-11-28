@@ -331,6 +331,11 @@ model AttemptSummary {
   maxAngleDeg   Float
   maxVelDegPerS Float
   pauses        Int
+  /// Descriptive movement quality computed on the phone (src/lib/rehab/quality.ts). Null when
+  /// fewer than 3 reps, or for sessions from older app versions. Never a recovery score.
+  sparcMedian   Float?
+  peakCv        Float?
+  peakTrendDeg  Float?
   deletedAt     DateTime?
 
   sessionId String       @unique @db.Uuid
