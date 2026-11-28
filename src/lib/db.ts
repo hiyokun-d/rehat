@@ -2,6 +2,7 @@
 // unless the user exports it. Why not localStorage: ~5 MB cap and synchronous writes; one
 // minute of raw samples is already ~300 KB.
 import Dexie, { type EntityTable } from "dexie";
+import type { OutboxRow } from "./api/outbox";
 import type { CustomSign } from "./asl/customSigns";
 import type { Template } from "./gesture/classifier";
 import type { SessionSummary } from "./rehab/summary";
@@ -49,6 +50,7 @@ type RehatDb = Dexie & {
   recordings: EntityTable<RecordingRow, "id">;
   validations: EntityTable<ValidationRow, "id">;
   sessions: EntityTable<SessionSummary, "id">;
+  outbox: EntityTable<OutboxRow, "id">;
 };
 
 let db: RehatDb | null = null;
@@ -69,6 +71,8 @@ export function getDb(): RehatDb {
     db.version(4).stores({ aslCustom: "++id, key" }); // user-recorded ASL words
     // Session summaries: on the phone its own, on the laptop the ones phones sent it.
     db.version(5).stores({ sessions: "id, startedAt, deviceId" });
+    // Sessions waiting to be sent to the backend (see lib/api/outbox.ts).
+    db.version(6).stores({ outbox: "id, userId" });
   }
   return db;
 }

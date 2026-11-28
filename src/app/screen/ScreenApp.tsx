@@ -42,6 +42,8 @@ import { Tabs } from "@/components/ui/Tabs";
 import { useRelay } from "@/hooks/useRelay";
 import { useSessions } from "@/hooks/useSessions";
 import { useSubtitle } from "@/hooks/useSubtitle";
+import { createApiClient } from "@/lib/api/client";
+import { makeTicketProvider } from "@/lib/api/wsTicket";
 import { getDb } from "@/lib/db";
 import type {
   GestureImuMsg,
@@ -58,6 +60,10 @@ import type {
 import { DEFAULT_CONFIG, type SessionConfig } from "@/lib/rehab/session";
 import type { SessionSummary } from "@/lib/rehab/summary";
 import { downloadJson, stamp } from "@/lib/sensor/recording";
+import { fetchSessions } from "./_lib/historyApi";
+import { liveRelayEnabled } from "./_lib/liveGate";
+import { LocalModeNotice } from "./LocalModeNotice";
+import { ServerHistory } from "./ServerHistory";
 
 type Tab = "live" | "history" | "validate" | "raw" | "gesture" | "asl";
 const ROOM_KEY = "rehat-room";
@@ -97,6 +103,13 @@ export function ScreenApp() {
   const [breaches, setBreaches] = useState<BreachEvent[]>([]);
   const [stale, setStale] = useState(false);
   const [received, setReceived] = useState<string | null>(null);
+  // null = not known yet; false = no therapist login, so this screen is in local mode.
+  const [therapist, setTherapist] = useState<boolean | null>(null);
+  const therapistRef = useRef(false);
+  therapistRef.current = therapist === true;
+  const [getTicket] = useState(() =>
+    makeTicketProvider(createApiClient(), () => therapistRef.current),
+  );
   const [gStatus, setGStatus] = useState<GestureStatusMsg | null>(null);
   const [gResult, setGResult] = useState<
     (GestureResultMsg & { receivedAt: number }) | null
@@ -117,12 +130,17 @@ export function ScreenApp() {
       setSavedRoom(sessionStorage.getItem(ROOM_KEY));
     } catch {}
     setReady(true);
+    // One probe so the Live tab can say it is the local fallback without opening Riwayat.
+    fetchSessions()
+      .then((r) => setTherapist(r.ok))
+      .catch(() => setTherapist(false));
   }, []);
 
   const relay = useRelay({
     role: "screen",
     roomId: savedRoom,
-    enabled: ready,
+    enabled: liveRelayEnabled(ready, therapist),
+    getTicket,
     onMessage: (m) => {
       const p = m.payload;
       switch (m.type) {
@@ -292,6 +310,8 @@ export function ScreenApp() {
       {/* Laptop camera + pretrained ASL, full width. Its own room/QR for a mirroring phone. */}
       {tab === "asl" && <AslApp embedded />}
 
+      {tab === "live" && therapist === false && <LocalModeNotice />}
+
       {tab === "live" && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
           <div className="space-y-4">
@@ -354,6 +374,8 @@ export function ScreenApp() {
           <EnvelopeCard config={config} onChange={setConfig} />
         </div>
       )}
+
+      {tab === "history" && <ServerHistory onTherapist={setTherapist} />}
 
       {tab === "history" && (
         <SessionHistory

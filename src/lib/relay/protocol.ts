@@ -19,10 +19,44 @@ export type ServerMsg =
   | Msg<"peers", { phones: number; screens: number }>
   | Msg<
       "error",
-      { code: "no-room" | "bad-message" | "replaced"; message: string }
+      {
+        code: "no-room" | "bad-message" | "replaced" | "too-many-attempts";
+        message: string;
+      }
     >;
 
 export const ROOM_CODE = /^\d{4}$/;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Parses one client frame (S2). Returns null for anything that is not
+ * `{ type: non-empty string, payload: object }`, and for a `join` whose `role` is present but
+ * not phone|screen. The caller must never read fields off the raw JSON: a `null` or a message
+ * without payload used to throw a TypeError inside the ws listener.
+ * The `role` a client claims is only validated here; the relay always uses the ticket's role.
+ */
+export function parseClientMessage(text: string): Msg | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isRecord(v)) return null;
+  if (typeof v.type !== "string" || v.type === "" || v.type.length > 64)
+    return null;
+  if (!isRecord(v.payload)) return null;
+  if (v.type === "join") {
+    const { role, roomId } = v.payload;
+    if (role !== undefined && role !== "phone" && role !== "screen")
+      return null;
+    if (roomId !== undefined && typeof roomId !== "string") return null;
+  }
+  return v as unknown as Msg;
+}
 
 export function makeMsg<T extends string, P>(
   type: T,
