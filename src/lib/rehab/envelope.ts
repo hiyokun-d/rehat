@@ -8,6 +8,22 @@ export interface SafetyEnvelope {
 
 export type BreachKind = "angle" | "velocity";
 
+/** Set by the therapist per exercise. The app never chooses this itself. */
+export type BreachAction = "CUE_ONLY" | "CUE_AND_PAUSE";
+
+/** Phone-only default: cue only. A therapist's value arrives from the bundle. */
+export function breachActionOf(config: {
+  onBreach?: BreachAction;
+}): BreachAction {
+  return config.onBreach ?? "CUE_ONLY";
+}
+
+export function shouldPauseOnBreach(config: {
+  onBreach?: BreachAction;
+}): boolean {
+  return breachActionOf(config) === "CUE_AND_PAUSE";
+}
+
 export interface BreachEvent {
   kind: BreachKind;
   value: number;

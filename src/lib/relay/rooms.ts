@@ -3,6 +3,14 @@
 // A screen may (re)create a room with a known code (so a laptop reload keeps its code);
 // a phone may only join an existing room. A newer phone replaces the older one, which
 // is what you want when the phone's socket reconnects before the old one has timed out.
+//
+// Ownership (R1-S1), the simplest rule that holds with clients that send no patient id when they
+// ask for a ticket: a room belongs to the therapist whose screen created it, and to ONE patient,
+// bound by the first phone that joins. Afterwards only that patient's phone may join. A screen or
+// phone from another therapist, or a phone of another patient, gets the same "no-room" answer as
+// for a code that does not exist, so a guessed code reveals nothing. Who the therapist and
+// patient are comes from the ticket (checked against the database when it was minted), never from
+// the join message.
 import { makeMsg, ROOM_CODE, type Role } from "./protocol.ts";
 
 export interface Peer {
@@ -10,7 +18,16 @@ export interface Peer {
   kick(reason: string): void;
 }
 
+/** Identity taken from a validated ticket. `patientId` is null for a therapist's screen. */
+export interface Owner {
+  therapistId: string;
+  patientId: string | null;
+}
+
 interface Room {
+  therapistId: string;
+  /** Bound by the first phone to join; null until then. */
+  patientId: string | null;
   phone: Peer | null;
   screens: Set<Peer>;
 }
@@ -18,6 +35,12 @@ interface Room {
 export type JoinResult =
   | { ok: true; roomId: string }
   | { ok: false; code: "no-room"; message: string };
+
+const NO_ROOM: JoinResult = {
+  ok: false,
+  code: "no-room",
+  message: "Kode ruang tidak ditemukan. Cek kode di layar laptop.",
+};
 
 export class Rooms {
   private rooms = new Map<string, Room>();
@@ -29,19 +52,22 @@ export class Rooms {
     this.random = random;
   }
 
-  join(peer: Peer, role: Role, requested?: string): JoinResult {
+  join(peer: Peer, role: Role, who: Owner, requested?: string): JoinResult {
     this.leave(peer);
     let roomId = requested && ROOM_CODE.test(requested) ? requested : undefined;
+    const existing = roomId ? this.rooms.get(roomId) : undefined;
+    // Someone else's room is indistinguishable from a missing one.
+    const foreign = existing && existing.therapistId !== who.therapistId;
 
     if (role === "phone") {
-      const room = roomId ? this.rooms.get(roomId) : undefined;
-      if (!room || !roomId) {
-        return {
-          ok: false,
-          code: "no-room",
-          message: "Kode ruang tidak ditemukan. Cek kode di layar laptop.",
-        };
+      const room = foreign ? undefined : existing;
+      const wrongPatient =
+        !who.patientId ||
+        (room?.patientId != null && room.patientId !== who.patientId);
+      if (!room || !roomId || wrongPatient) {
+        return NO_ROOM;
       }
+      room.patientId = who.patientId;
       if (room.phone && room.phone !== peer) {
         const old = room.phone;
         this.where.delete(old);
@@ -49,10 +75,18 @@ export class Rooms {
       }
       room.phone = peer;
     } else {
+      if (foreign) {
+        return NO_ROOM;
+      }
       roomId ??= this.newCode();
       let room = this.rooms.get(roomId);
       if (!room) {
-        room = { phone: null, screens: new Set() };
+        room = {
+          therapistId: who.therapistId,
+          patientId: null,
+          phone: null,
+          screens: new Set(),
+        };
         this.rooms.set(roomId, room);
       }
       room.screens.add(peer);

@@ -17,10 +17,17 @@ import { connect } from "node:net";
 import type { Duplex } from "node:stream";
 import { createServer as createTlsServer } from "node:tls";
 import next from "next";
-import { WebSocketServer } from "ws";
+import { type RawData, type WebSocket, WebSocketServer } from "ws";
 import { lanIps } from "./src/lib/lan.ts";
-import { type JoinMsg, type Msg, makeMsg } from "./src/lib/relay/protocol.ts";
+import { createMessageHandler } from "./src/lib/relay/connection.ts";
+import { makeOriginCheck } from "./src/lib/relay/origin.ts";
+import { makeMsg } from "./src/lib/relay/protocol.ts";
 import { type Peer, Rooms } from "./src/lib/relay/rooms.ts";
+import {
+  startTicketSweeper,
+  type TicketClaims,
+} from "./src/lib/relay/tickets.ts";
+import { authorizeUpgrade } from "./src/lib/relay/upgrade.ts";
 
 const port = Number.parseInt(process.env.PORT || "3000", 10);
 const httpsPort = Number.parseInt(process.env.HTTPS_PORT || "3443", 10);
@@ -37,7 +44,19 @@ await app.prepare();
 const nextUpgrade = app.getUpgradeHandler();
 
 const rooms = new Rooms();
-const wss = new WebSocketServer({ noServer: true });
+// maxPayload caps a single ws frame (S1). The relay only carries small JSON (join, state,
+// telemetry points, breaches); 64 KB is far above those and well below the library default of
+// ~100 MiB, so a hostile client cannot exhaust memory with one frame.
+const MAX_WS_PAYLOAD = 64 * 1024;
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD });
+
+// Origin allowlist (src/lib/relay/origin.ts): localhost, the LAN IPs, same-host cloudflared
+// tunnels, and the hosts in ALLOWED_ORIGINS (production domains). A request with a cross-origin or
+// missing Origin is refused at upgrade.
+const originAllowed = makeOriginCheck(lanIps(), process.env.ALLOWED_ORIGINS);
+
+// Expired tickets are also dropped on a timer, not only when a new one is minted (R1-S5).
+startTicketSweeper();
 
 function onRequest(req: IncomingMessage, res: ServerResponse) {
   // The pairing QR asks where phones can reach us (the laptop itself may be on localhost).
@@ -48,10 +67,20 @@ function onRequest(req: IncomingMessage, res: ServerResponse) {
   handle(req, res);
 }
 
+function rejectUpgrade(socket: Duplex, status: number, reason: string) {
+  // No ticket value is ever echoed here, so it cannot leak into logs or the response.
+  socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n\r\n`);
+  socket.destroy();
+}
+
 function onUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
   if (req.url?.startsWith("/ws")) {
+    // S1 gate: Origin, then a valid one-time ticket minted by POST /api/ws-ticket and consumed
+    // here. The ticket's identity (role, therapist, patient) is what the relay trusts.
+    const auth = authorizeUpgrade(req, originAllowed);
+    if (!auth.ok) return rejectUpgrade(socket, auth.status, auth.reason);
     wss.handleUpgrade(req, socket, head, (ws) =>
-      wss.emit("connection", ws, req),
+      wss.emit("connection", ws, req, auth.claims),
     );
   } else {
     nextUpgrade(req, socket, head); // Next's own dev socket (hot reload)
@@ -61,73 +90,52 @@ function onUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
 const server = createServer(onRequest);
 server.on("upgrade", onUpgrade);
 
-wss.on("connection", (ws) => {
-  let alive = true;
-  ws.on("pong", () => {
-    alive = true;
-  });
-  // A phone that goes to sleep often never sends a TCP close. Ping every 5 s and drop
-  // sockets that miss one, so the screen learns quickly that the phone is gone.
-  const heartbeat = setInterval(() => {
-    if (!alive) return ws.terminate();
-    alive = false;
-    ws.ping();
-  }, 5000);
+wss.on(
+  "connection",
+  (ws: WebSocket, _req: IncomingMessage, claims: TicketClaims) => {
+    let alive = true;
+    ws.on("pong", () => {
+      alive = true;
+    });
+    // A phone that goes to sleep often never sends a TCP close. Ping every 5 s and drop
+    // sockets that miss one, so the screen learns quickly that the phone is gone.
+    const heartbeat = setInterval(() => {
+      if (!alive) return ws.terminate();
+      alive = false;
+      ws.ping();
+    }, 5000);
 
-  const peer: Peer = {
-    send: (text) => {
-      if (ws.readyState === ws.OPEN) ws.send(text);
-    },
-    kick: (reason) => {
-      peer.send(
-        JSON.stringify(
-          makeMsg("error", "", {
-            code: reason,
-            message: "HP lain bergabung ke ruang ini.",
-          }),
-        ),
-      );
-      ws.close(4000, reason);
-    },
-  };
-
-  ws.on("message", (data) => {
-    const text = data.toString();
-    let msg: Msg;
-    try {
-      msg = JSON.parse(text);
-    } catch {
-      return peer.send(
-        JSON.stringify(
-          makeMsg("error", "", { code: "bad-message", message: "Bukan JSON" }),
-        ),
-      );
-    }
-    if (msg.type === "join") {
-      const { role, roomId } = (msg as JoinMsg).payload;
-      const res = rooms.join(peer, role, roomId);
-      if (res.ok)
+    const peer: Peer = {
+      send: (text) => {
+        if (ws.readyState === ws.OPEN) ws.send(text);
+      },
+      kick: (reason) => {
         peer.send(
           JSON.stringify(
-            makeMsg("joined", res.roomId, { role, roomId: res.roomId }),
+            makeMsg("error", "", {
+              code: reason,
+              message: "HP lain bergabung ke ruang ini.",
+            }),
           ),
         );
-      else
-        peer.send(
-          JSON.stringify(
-            makeMsg("error", "", { code: res.code, message: res.message }),
-          ),
-        );
-      return;
-    }
-    rooms.relay(peer, text);
-  });
+        ws.close(4000, reason);
+      },
+    };
 
-  ws.on("close", () => {
-    clearInterval(heartbeat);
-    rooms.leave(peer);
-  });
-});
+    const onText = createMessageHandler(rooms, peer, claims, (code, reason) =>
+      ws.close(code, reason),
+    );
+    ws.on("message", (data: RawData) => onText(data.toString()));
+    // An oversized or malformed frame makes `ws` emit 'error'; with no listener that is an
+    // uncaught exception in the process that also serves Next.
+    ws.on("error", () => ws.terminate());
+
+    ws.on("close", () => {
+      clearInterval(heartbeat);
+      rooms.leave(peer);
+    });
+  },
+);
 
 server.listen(port, () => {
   console.log(
